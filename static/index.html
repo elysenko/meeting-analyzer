@@ -12724,7 +12724,7 @@ async function sendChatDocument(question, format) {
           contentEl.innerHTML =
             '<div class="chat-doc-card">'
             + '<div class="chat-doc-card-name">' + evIcon + ' ' + (event.filename || ('document.' + evFmt)) + '</div>'
-            + '<a class="chat-doc-download-btn" href="' + event.download_url + '" download>'
+            + '<a class="chat-doc-download-btn" href="' + (typeof __BASE !== 'undefined' ? __BASE : '') + event.download_url + '" download>'
             + '\u2B07 ' + evLabel + '</a></div>';
           if (event.message && event.message.id != null) statusEl.dataset.chatMessageId = String(event.message.id);
           if (event.message && event.message.content) appendChatMessageToHistory({ role: 'assistant', content: event.message.content });
