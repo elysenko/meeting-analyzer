@@ -3233,7 +3233,7 @@ async def auth_callback(request: Request):
         # On state mismatch (stale session), clear session and redirect to retry login
         if "state" in str(e).lower():
             request.session.clear()
-            return RedirectResponse(url="/auth/login")
+            return RedirectResponse(url=f"{APP_PATH_PREFIX}/auth/login")
         raise HTTPException(status_code=400, detail=f"Authentication failed: {str(e)}")
     
     # Get user info from the token
