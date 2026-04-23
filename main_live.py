@@ -340,6 +340,35 @@ async def lifespan(app):
 
 app = FastAPI(title="Meeting Analyzer", lifespan=lifespan)
 
+
+class _StripPrefixMiddleware:
+    """Strip APP_PATH_PREFIX from request paths when the reverse proxy hasn't done it.
+
+    Nginx rewrites /meeting-analyzer/foo → /foo before forwarding, so the pod
+    normally sees only the stripped path. When the app is accessed directly
+    (e.g. via a Tailscale port that tunnels straight to the pod), the full
+    prefixed path arrives and this middleware strips it so routing works the
+    same either way.
+    """
+
+    def __init__(self, asgi_app, prefix: str):
+        self.app = asgi_app
+        self.prefix = prefix.rstrip("/").encode()
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] in ("http", "websocket") and self.prefix:
+            raw = scope.get("raw_path", b"")
+            if raw == self.prefix or raw.startswith(self.prefix + b"/"):
+                stripped = raw[len(self.prefix):] or b"/"
+                scope = dict(scope)
+                scope["raw_path"] = stripped
+                scope["path"] = stripped.decode("latin-1")
+        await self.app(scope, receive, send)
+
+
+if APP_PATH_PREFIX:
+    app.add_middleware(_StripPrefixMiddleware, prefix=APP_PATH_PREFIX)
+
 # Add session middleware for OAuth
 app.add_middleware(
     SessionMiddleware,
