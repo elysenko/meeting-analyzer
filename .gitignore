@@ -1,0 +1,31 @@
+__pycache__/
+*.pyc
+*.pyo
+.env
+.env.*
+
+# Internal agent/pipeline tooling
+.claude/
+.claude-bridge/
+.pipeline/
+.pipeline-worktrees/
+.sessions/
+BRIEFS/
+SOUL.md
+
+# Old/backup files
+main.py.bak.*
+main_patched.py
+*.bak
+
+# Research/scratch files
+heic-research-report.md
+live-qa-research-report.md
+research-report.md
+_live_inline.js
+_live_inline_check.js
+team-chat.js
+/index.html
+
+# Build artifacts
+web/

@@ -1,0 +1,103 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: meeting-analyzer
+  namespace: whisper
+  labels:
+    app: whisper
+    component: analyzer
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: whisper
+      component: analyzer
+  template:
+    metadata:
+      labels:
+        app: whisper
+        component: analyzer
+    spec:
+      nodeSelector:
+        kubernetes.io/hostname: ubuntu
+      containers:
+      - name: analyzer
+        image: localhost:30500/whisper-analyzer:latest
+        imagePullPolicy: Always
+        env:
+        - name: PYTHONPATH
+          value: /app
+        - name: MINIO_ENDPOINT
+          value: minio.minio.svc.cluster.local:9000
+        - name: MINIO_BUCKET
+          value: meeting-analyzer
+        - name: MINIO_ACCESS_KEY
+          value: REPLACE_WITH_MINIO_ACCESS_KEY
+        - name: MINIO_SECRET_KEY
+          value: "REPLACE_WITH_MINIO_SECRET_KEY"
+        - name: APP_PATH_PREFIX
+          value: "/meeting-analyzer"
+        - name: KEYCLOAK_CALLBACK_URL
+          value: "https://ubuntu.desmana-truck.ts.net/meeting-analyzer/auth/callback"
+        - name: KEYCLOAK_CLIENT_SECRET
+          value: "REPLACE_WITH_KEYCLOAK_CLIENT_SECRET"
+        ports:
+        - name: http
+          containerPort: 8000
+          protocol: TCP
+        volumeMounts:
+        - name: app-code
+          mountPath: /app
+        - name: llm-runner-root
+          mountPath: /home/ubuntu/llm-runner
+        - name: qr-root
+          mountPath: /home/ubuntu/qr
+        - name: dr-root
+          mountPath: /home/ubuntu/dr
+        resources:
+          requests:
+            cpu: "500m"
+            memory: "1Gi"
+          limits:
+            cpu: "4"
+            memory: "4Gi"
+        livenessProbe:
+          httpGet:
+            path: /health/live
+            port: 8000
+          initialDelaySeconds: 30
+          periodSeconds: 30
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /health/live
+            port: 8000
+          initialDelaySeconds: 15
+          periodSeconds: 10
+          failureThreshold: 3
+        startupProbe:
+          httpGet:
+            path: /health/live
+            port: 8000
+          initialDelaySeconds: 10
+          periodSeconds: 5
+          failureThreshold: 30
+      volumes:
+      - name: app-code
+        hostPath:
+          path: /home/ubuntu/colossus/codebases/whisper/app
+          type: Directory
+      - name: llm-runner-root
+        hostPath:
+          path: /home/ubuntu/llm-runner
+          type: Directory
+      - name: qr-root
+        hostPath:
+          path: /home/ubuntu/qr
+          type: Directory
+      - name: dr-root
+        hostPath:
+          path: /home/ubuntu/dr
+          type: Directory
