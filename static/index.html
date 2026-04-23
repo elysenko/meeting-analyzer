@@ -11557,16 +11557,17 @@ function expandDocPreview() {
 }
 
 function getDocumentPreviewHtml(doc) {
+  var base = (typeof __BASE !== 'undefined' ? __BASE : '');
   if (doc.drive_file_id) {
     return '<iframe src="https://drive.google.com/file/d/' + doc.drive_file_id + '/preview" style="width:100%;height:450px;border:none;border-radius:4px" allowfullscreen></iframe>';
   }
   var ext = (doc.filename || '').split('.').pop().toLowerCase();
   var mime = (doc.mime_type || '').toLowerCase();
   if (['png','jpg','jpeg','gif','webp','svg','bmp','ico'].indexOf(ext) !== -1 || mime.startsWith('image/')) {
-    return '<img src="/documents/' + doc.id + '/raw" style="max-width:100%;max-height:450px;border-radius:4px">';
+    return '<img src="' + base + '/documents/' + doc.id + '/raw" style="max-width:100%;max-height:450px;border-radius:4px">';
   }
   if (ext === 'pdf' || mime === 'application/pdf') {
-    return '<iframe src="/documents/' + doc.id + '/raw" style="width:100%;height:450px;border:none;border-radius:4px" allowfullscreen></iframe>';
+    return '<iframe src="' + base + '/documents/' + doc.id + '/raw" style="width:100%;height:450px;border:none;border-radius:4px" allowfullscreen></iframe>';
   }
   if (['md','txt','log','csv','json','yaml','yml','xml','py','js','ts','html','css'].indexOf(ext) !== -1) {
     /* Text/code/markdown — show extracted text inline */
@@ -11580,7 +11581,7 @@ function getDocumentPreviewHtml(doc) {
   }
   /* DOCX, PPTX, XLSX — use server-side PDF preview if available */
   if (doc.has_preview) {
-    return '<iframe src="/documents/' + doc.id + '/preview" style="width:100%;height:450px;border:none;border-radius:4px" allowfullscreen></iframe>';
+    return '<iframe src="' + base + '/documents/' + doc.id + '/preview" style="width:100%;height:450px;border:none;border-radius:4px" allowfullscreen></iframe>';
   }
   return '<div class="empty-state" style="padding:0.5rem">Preview is being generated — please check back in a moment.</div>';
 }
