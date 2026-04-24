@@ -15015,16 +15015,24 @@ document.getElementById('docDeleteSelected').addEventListener('click', async fun
   const ids = Array.from(docSelectedIds);
   if (ids.length === 0) return;
   if (!confirm('Delete ' + ids.length + ' document' + (ids.length > 1 ? 's' : '') + '? This cannot be undone.')) return;
-  const results = await Promise.allSettled(ids.map(function(id) {
-    return fetch('/workspaces/' + currentWorkspaceId + '/documents/' + id, { method: 'DELETE' })
-      .then(function(r) { return { id: id, ok: r.ok }; })
-      .catch(function() { return { id: id, ok: false }; });
-  }));
-  const deletedIds = results
-    .filter(function(r) { return r.status === 'fulfilled' && r.value.ok; })
-    .map(function(r) { return r.value.id; });
-  _removeDocRows(deletedIds);
-  loadDocuments().catch(function() {});
+  const btn = this;
+  btn.disabled = true;
+  btn.textContent = 'Deleting…';
+  try {
+    const results = await Promise.allSettled(ids.map(function(id) {
+      return fetch('/workspaces/' + currentWorkspaceId + '/documents/' + id, { method: 'DELETE' })
+        .then(function(r) { return { id: id, ok: r.ok }; })
+        .catch(function() { return { id: id, ok: false }; });
+    }));
+    const deletedIds = results
+      .filter(function(r) { return r.status === 'fulfilled' && r.value.ok; })
+      .map(function(r) { return r.value.id; });
+    _removeDocRows(deletedIds);
+    loadDocuments().catch(function() {});
+  } finally {
+    btn.textContent = 'Delete Selected';
+    btn.disabled = docSelectedIds.size === 0;
+  }
 });
 
 /* --- Context Pickers --- */
