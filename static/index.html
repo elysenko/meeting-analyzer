@@ -14950,9 +14950,13 @@ async function deleteDoc(docId) {
   if (!confirm('Delete this document?')) return;
   try {
     const resp = await fetch('/workspaces/' + currentWorkspaceId + '/documents/' + docId, { method: 'DELETE' });
-    if (!resp.ok) return;
+    if (!resp.ok) {
+      const err = await resp.json().catch(function() { return {}; });
+      alert('Delete failed: ' + (err.detail || ('HTTP ' + resp.status)));
+      return;
+    }
     await loadDocuments();
-  } catch (e) { /* ignore */ }
+  } catch (e) { alert('Delete failed: ' + (e.message || 'Unknown error')); }
 }
 
 document.getElementById('docTableBody').addEventListener('click', function(e) {

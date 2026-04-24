@@ -12948,13 +12948,17 @@ async def delete_document(request: Request, workspace_id: int, doc_id: int):
     if not row:
         raise HTTPException(status_code=404, detail="Document not found")
 
-    async with _get_minio_client() as client:
-        for key in [row["object_key"], row["preview_pdf_key"]]:
-            if key:
-                try:
-                    await client.delete_object(Bucket=MINIO_BUCKET, Key=key)
-                except Exception as e:
-                    logger.warning("MinIO delete failed for %s: %s", key, e)
+    # Best-effort MinIO cleanup — don't let storage errors block DB deletion
+    try:
+        async with _get_minio_client() as client:
+            for key in [row["object_key"], row["preview_pdf_key"]]:
+                if key:
+                    try:
+                        await client.delete_object(Bucket=MINIO_BUCKET, Key=key)
+                    except Exception as e:
+                        logger.warning("MinIO delete failed for %s: %s", key, e)
+    except Exception as e:
+        logger.warning("MinIO unavailable, skipping object cleanup for doc %s: %s", doc_id, e)
 
     async with db_pool.acquire() as conn:
         await conn.execute("DELETE FROM documents WHERE id = $1", doc_id)
