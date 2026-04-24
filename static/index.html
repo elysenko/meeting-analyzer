@@ -2658,6 +2658,34 @@
     background: var(--surface); padding: 0.1rem 0.3rem; border-radius: 3px;
     text-transform: lowercase;
   }
+  /* ---- Delete progress modal ---- */
+  #deleteModal {
+    position: fixed; inset: 0; z-index: 10100;
+    background: rgba(0,0,0,0.45);
+    display: none; align-items: center; justify-content: center;
+  }
+  #deleteModal.active { display: flex; }
+  #deleteModalBox {
+    background: var(--bg, #fff); border: 1px solid var(--border, #ddd);
+    border-radius: 14px; padding: 1.75rem 2rem;
+    min-width: 260px; max-width: 380px; width: 90%;
+    display: flex; flex-direction: column; align-items: center; gap: 1rem;
+    box-shadow: 0 8px 32px rgba(0,0,0,0.18);
+    text-align: center;
+  }
+  #deleteModalSpinner {
+    width: 28px; height: 28px; border-radius: 50%;
+    border: 3px solid var(--border, #ddd); border-top-color: var(--accent, #6c63ff);
+    animation: spin 0.75s linear infinite;
+  }
+  #deleteModalMsg { font-size: 0.95rem; color: var(--text, #222); line-height: 1.4; }
+  #deleteModalClose {
+    display: none; margin-top: 0.25rem;
+    padding: 0.4rem 1.2rem; border-radius: 8px;
+    background: var(--surface, #f5f5f5); border: 1px solid var(--border, #ddd);
+    color: var(--text, #222); cursor: pointer; font-size: 0.88rem;
+  }
+  #deleteModalClose:hover { background: var(--border, #ddd); }
 </style>
 </head>
 <body>
@@ -14945,6 +14973,27 @@ async function downloadDoc(docId) {
   document.body.removeChild(a);
 }
 
+function _showDeleteModal(msg) {
+  document.getElementById('deleteModalSpinner').style.display = '';
+  document.getElementById('deleteModalMsg').textContent = msg || 'Deleting…';
+  document.getElementById('deleteModalClose').style.display = 'none';
+  document.getElementById('deleteModal').classList.add('active');
+}
+function _hideDeleteModal() {
+  document.getElementById('deleteModal').classList.remove('active');
+}
+function _deleteModalDone(msg) {
+  document.getElementById('deleteModalSpinner').style.display = 'none';
+  document.getElementById('deleteModalMsg').textContent = msg;
+  document.getElementById('deleteModalClose').style.display = '';
+  setTimeout(_hideDeleteModal, 1800);
+}
+function _deleteModalError(msg) {
+  document.getElementById('deleteModalSpinner').style.display = 'none';
+  document.getElementById('deleteModalMsg').textContent = msg;
+  document.getElementById('deleteModalClose').style.display = '';
+}
+
 async function deleteDoc(docId) {
   if (!currentWorkspaceId) return;
   var btn = document.querySelector('[data-doc-action="delete"][data-doc-id="' + docId + '"]');
@@ -14966,23 +15015,20 @@ async function deleteDoc(docId) {
     }, 2500);
     return;
   }
-  if (btn) {
-    delete btn.dataset.deleteArmed;
-    btn.disabled = true;
-    btn.textContent = '…';
-    btn.style.color = '';
-  }
+  if (btn) { delete btn.dataset.deleteArmed; btn.style.color = ''; }
+  _showDeleteModal('Deleting document…');
   try {
     const resp = await fetch('/workspaces/' + currentWorkspaceId + '/documents/' + docId, { method: 'DELETE' });
     if (!resp.ok) {
       const err = await resp.json().catch(function() { return {}; });
-      if (btn) { btn.disabled = false; btn.textContent = '!'; btn.title = (err.detail || ('HTTP ' + resp.status)); }
+      _deleteModalError('Delete failed: ' + (err.detail || ('HTTP ' + resp.status)));
       return;
     }
     _removeDocRows([docId]);
+    _deleteModalDone('Document deleted.');
     loadDocuments().catch(function() {});
   } catch (e) {
-    if (btn) { btn.disabled = false; btn.textContent = '!'; btn.title = (e.message || 'Error'); }
+    _deleteModalError('Delete failed: ' + (e.message || 'Unknown error'));
   }
 }
 
@@ -15040,10 +15086,9 @@ document.getElementById('docTableBody').addEventListener('click', function(e) {
 document.getElementById('docDeleteSelected').addEventListener('click', async function() {
   const ids = Array.from(docSelectedIds);
   if (ids.length === 0) return;
-  if (!confirm('Delete ' + ids.length + ' document' + (ids.length > 1 ? 's' : '') + '? This cannot be undone.')) return;
-  const btn = this;
-  btn.disabled = true;
-  btn.textContent = 'Deleting…';
+  const noun = ids.length + ' document' + (ids.length > 1 ? 's' : '');
+  if (!window.confirm('Delete ' + noun + '? This cannot be undone.')) return;
+  _showDeleteModal('Deleting ' + noun + '…');
   try {
     const results = await Promise.allSettled(ids.map(function(id) {
       return fetch('/workspaces/' + currentWorkspaceId + '/documents/' + id, { method: 'DELETE' })
@@ -15054,10 +15099,15 @@ document.getElementById('docDeleteSelected').addEventListener('click', async fun
       .filter(function(r) { return r.status === 'fulfilled' && r.value.ok; })
       .map(function(r) { return r.value.id; });
     _removeDocRows(deletedIds);
+    const failed = ids.length - deletedIds.length;
+    if (failed > 0) {
+      _deleteModalError('Deleted ' + deletedIds.length + ', failed ' + failed + '. Try again.');
+    } else {
+      _deleteModalDone('Deleted ' + noun + '.');
+    }
     loadDocuments().catch(function() {});
-  } finally {
-    btn.textContent = 'Delete Selected';
-    btn.disabled = docSelectedIds.size === 0;
+  } catch (e) {
+    _deleteModalError('Delete failed: ' + (e.message || 'Unknown error'));
   }
 });
 
@@ -15834,5 +15884,12 @@ async function generateFromContext() {
 loadLLMModels().catch(function() {});
 loadLanding().then(function() { _initFromUrl(); });
 </script>
+<div id="deleteModal" role="dialog" aria-modal="true" aria-labelledby="deleteModalMsg">
+  <div id="deleteModalBox">
+    <div id="deleteModalSpinner"></div>
+    <div id="deleteModalMsg">Deleting…</div>
+    <button id="deleteModalClose" onclick="_hideDeleteModal()">OK</button>
+  </div>
+</div>
 </body>
 </html>
