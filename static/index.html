@@ -14955,8 +14955,24 @@ async function deleteDoc(docId) {
       alert('Delete failed: ' + (err.detail || ('HTTP ' + resp.status)));
       return;
     }
-    await loadDocuments();
+    _removeDocRows([docId]);
+    loadDocuments().catch(function() {});
   } catch (e) { alert('Delete failed: ' + (e.message || 'Unknown error')); }
+}
+
+function _removeDocRows(ids) {
+  var tbody = document.getElementById('docTableBody');
+  ids.forEach(function(id) {
+    docSelectedIds.delete(id);
+    var cb = tbody.querySelector('[data-doc-select="' + id + '"]');
+    if (cb) cb.closest('tr').remove();
+  });
+  updateDocSelectUI();
+  if (!tbody.querySelector('tr')) {
+    document.getElementById('docTable').style.display = 'none';
+    document.getElementById('docEmptyState').style.display = '';
+    document.getElementById('docSelectActions').style.display = 'none';
+  }
 }
 
 document.getElementById('docTableBody').addEventListener('click', function(e) {
@@ -14999,12 +15015,16 @@ document.getElementById('docDeleteSelected').addEventListener('click', async fun
   const ids = Array.from(docSelectedIds);
   if (ids.length === 0) return;
   if (!confirm('Delete ' + ids.length + ' document' + (ids.length > 1 ? 's' : '') + '? This cannot be undone.')) return;
-  await Promise.all(ids.map(function(id) {
-    return fetch('/workspaces/' + currentWorkspaceId + '/documents/' + id, { method: 'DELETE' }).catch(function() {});
+  const results = await Promise.allSettled(ids.map(function(id) {
+    return fetch('/workspaces/' + currentWorkspaceId + '/documents/' + id, { method: 'DELETE' })
+      .then(function(r) { return { id: id, ok: r.ok }; })
+      .catch(function() { return { id: id, ok: false }; });
   }));
-  docSelectedIds.clear();
-  updateDocSelectUI();
-  await loadDocuments();
+  const deletedIds = results
+    .filter(function(r) { return r.status === 'fulfilled' && r.value.ok; })
+    .map(function(r) { return r.value.id; });
+  _removeDocRows(deletedIds);
+  loadDocuments().catch(function() {});
 });
 
 /* --- Context Pickers --- */
