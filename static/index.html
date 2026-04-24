@@ -14947,17 +14947,43 @@ async function downloadDoc(docId) {
 
 async function deleteDoc(docId) {
   if (!currentWorkspaceId) return;
-  if (!confirm('Delete this document?')) return;
+  var btn = document.querySelector('[data-doc-action="delete"][data-doc-id="' + docId + '"]');
+  // Two-tap confirm: first click arms the button; second click within 2.5s confirms
+  if (btn && btn.dataset.deleteArmed !== '1') {
+    btn.dataset.deleteArmed = '1';
+    var origText = btn.textContent;
+    var origTitle = btn.title;
+    btn.textContent = '?';
+    btn.title = 'Click again to confirm delete';
+    btn.style.color = 'var(--red)';
+    setTimeout(function() {
+      if (btn.dataset.deleteArmed === '1') {
+        delete btn.dataset.deleteArmed;
+        btn.textContent = origText;
+        btn.title = origTitle;
+        btn.style.color = '';
+      }
+    }, 2500);
+    return;
+  }
+  if (btn) {
+    delete btn.dataset.deleteArmed;
+    btn.disabled = true;
+    btn.textContent = '…';
+    btn.style.color = '';
+  }
   try {
     const resp = await fetch('/workspaces/' + currentWorkspaceId + '/documents/' + docId, { method: 'DELETE' });
     if (!resp.ok) {
       const err = await resp.json().catch(function() { return {}; });
-      alert('Delete failed: ' + (err.detail || ('HTTP ' + resp.status)));
+      if (btn) { btn.disabled = false; btn.textContent = '!'; btn.title = (err.detail || ('HTTP ' + resp.status)); }
       return;
     }
     _removeDocRows([docId]);
     loadDocuments().catch(function() {});
-  } catch (e) { alert('Delete failed: ' + (e.message || 'Unknown error')); }
+  } catch (e) {
+    if (btn) { btn.disabled = false; btn.textContent = '!'; btn.title = (e.message || 'Error'); }
+  }
 }
 
 function _removeDocRows(ids) {
