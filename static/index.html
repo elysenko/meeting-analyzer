@@ -12589,6 +12589,8 @@ async function sendChat() {
     moveChipsToActiveContext(activeAttachments.map(function(a) { return a.id; }));
   }
   input.value = '';
+  var _fsInput = document.getElementById('chatInputFs');
+  if (_fsInput) _fsInput.value = '';
   /* Clear all pending images after attaching to message */
   chatPendingImages = [];
   var previewWrap = document.getElementById('chatImgPreviewWrap');
@@ -12604,7 +12606,7 @@ async function sendChat() {
     _srcParts.push((contextSelection.include_research_ids.length) + ' research');
   var _srcLabel = _srcParts.length ? ' · ' + _srcParts.join(' · ') : '';
   setChatHistoryStatus('Thinking...' + _srcLabel);
-  const thinkingEl = null;
+  const thinkingEl = addChatMessage('assistant', '', { html: '<span class="typing-dots"><span></span><span></span><span></span></span>' });
   const controller = new AbortController();
   activeChatRequestController = controller;
   syncChatControlState();
