@@ -12604,8 +12604,7 @@ async function sendChat() {
     _srcParts.push((contextSelection.include_research_ids.length) + ' research');
   var _srcLabel = _srcParts.length ? ' · ' + _srcParts.join(' · ') : '';
   setChatHistoryStatus('Thinking...' + _srcLabel);
-  /* Show thinking dots while waiting for response */
-  const thinkingEl = addChatMessage('assistant', '', { html: '<span class="typing-dots"><span>.</span><span>.</span><span>.</span></span>' });
+  const thinkingEl = null;
   const controller = new AbortController();
   activeChatRequestController = controller;
   syncChatControlState();
@@ -12625,8 +12624,7 @@ async function sendChat() {
     if (!resp.ok) throw new Error(await parseJSONError(resp, 'Chat failed.'));
     const payload = await resp.json();
 
-    /* Remove thinking dots, render the complete response */
-    thinkingEl.remove();
+    if (thinkingEl) thinkingEl.remove();
     const storedMsg = payload.message || null;
     const responseText = (storedMsg && storedMsg.content) || payload.content || '';
     const responseHtml = (storedMsg && storedMsg.content_html) || null;
@@ -12644,7 +12642,7 @@ async function sendChat() {
       : '';
     setChatHistoryStatus((tokenStr || 'Done.') + _srcLabel);
   } catch (err) {
-    thinkingEl.remove();
+    if (thinkingEl) thinkingEl.remove();
     const aborted = controller.signal.aborted || (err && err.name === 'AbortError');
     if (currentChatSessionId) await loadChatSessions(true, currentChatSessionId, { skipOpen: true }).catch(function() {});
     if (aborted) {
