@@ -19,6 +19,7 @@ python-docx>=1.1,<2
 python-pptx>=1.0,<2
 reportlab>=4.2,<5
 python-dateutil>=2.9,<3
+six>=1.16
 markdown>=3.7,<4
 bleach>=6.2,<7
 Pillow>=11,<12
