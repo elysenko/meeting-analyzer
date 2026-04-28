@@ -11115,6 +11115,155 @@ async def _derive_generate_run_intake(
     }
 
 
+async def test_intake_flow(request: Request, workspace_id: int, task_id: int):
+    """Test endpoint: run research → approve outline → derive intake, return summary."""
+    await _ensure_user_workspace(request, workspace_id)
+    session = await _get_generate_task_session(workspace_id, task_id)
+
+    # --- Phase 1: Research + outline generation (mirrors the streaming research endpoint) ---
+    linked_research_id = session.get("linked_research_id")
+    if not linked_research_id:
+        linked_research_id = await _ensure_task_linked_research_session(
+            workspace_id, session["todo"], session["related_research_ids"],
+        )
+    research_topic = _build_generate_task_research_topic(session, None)
+    _, document_evidence = await _build_task_document_evidence(
+        workspace_id, session, extra_topics=[research_topic], limit=4,
+    )
+    context_brief = await _build_generate_question_context(workspace_id, session)
+    document_block = _document_evidence_prompt_block(document_evidence)
+    task_brief = (
+        f'Primary task: {session["todo"]["task"]}\n'
+        f'Artifact: {_get_template_config(session["artifact_template"])["label"]}\n'
+        f'Brand: {(session.get("branding") or {}).get("brand_name") or ""}\n'
+        f'Additional guidance: {session.get("prompt") or ""}\n\n'
+        f'Setup context:\n{context_brief}'
+        + (f'\n\nDocument evidence:\n{document_block}' if document_block else "")
+    ).strip()
+    await _update_research_session(
+        linked_research_id,
+        title=f'Template Research: {session["todo"]["task"][:100]}',
+        status="running", error=None,
+        source_research_ids=session["related_research_ids"],
+        source_document_refs=document_evidence,
+    )
+    qr_result, qr_meta = await _run_quick_research(
+        workspace_id, research_topic, "general", None,
+        task_brief=task_brief, document_evidence=document_evidence,
+    )
+    await _update_research_session(
+        linked_research_id,
+        title=qr_result["title"], summary=qr_result["summary"],
+        content=qr_result["content"], sources=qr_result["sources"],
+        status="completed",
+        llm_provider=qr_meta.get("provider"), llm_model=qr_meta.get("model"),
+        source_research_ids=qr_result.get("source_research_ids") or session["related_research_ids"],
+        source_document_refs=qr_result.get("source_document_refs") or document_evidence,
+    )
+
+    # --- Phase 2: Generate template outline ---
+    config = _get_template_config(session.get("artifact_template") or "requirements")
+    template_label = config["label"]
+    preferences = await _get_workspace_llm_preferences(workspace_id)
+    provider, model = _resolve_task_llm(preferences, "research")
+    qr_summary = qr_result.get("summary") or ""
+    qr_content = (qr_result.get("content") or "")[:4000]
+    template_section_guidance = _get_template_section_guidance(session.get("artifact_template") or "requirements")
+    draft_prompt = f"""\
+You are a document outline assistant building a {template_label} for a client deliverable.
+
+Task: {session["todo"]["task"]}
+Brand: {(session.get("branding") or {}).get("brand_name") or "Not specified"}
+Additional guidance: {session.get("prompt") or "None"}
+
+Research summary:
+{qr_summary}
+
+Research details:
+{qr_content}
+
+Setup context:
+{context_brief or "No additional setup context."}
+
+Template section guidance:
+{template_section_guidance}
+
+Use the task context and research to select and name sections that are relevant to this specific task.
+This is a structure-only outline — leave all field values as empty strings. Value prefilling happens in a separate step after the user approves the template.
+
+Return ONLY valid JSON with:
+- "organization_context_summary": string (what you learned about the organization)
+- "task_understanding": string (what the deliverable needs to accomplish)
+- "requirements_understanding": string (key requirements identified)
+- "assumptions": array of strings (key assumptions made)
+- "sections": array of 3-7 objects with keys:
+  - "key": snake_case identifier
+  - "heading": section title
+  - "summary": 1-2 sentence description of what this section covers
+  - "required": boolean
+  - "field_keys": array of question_key strings
+  - "fields": array of objects with keys:
+    - "question_key": snake_case identifier
+    - "label": human-readable label
+    - "required": boolean
+    - "input_type": "text" or "textarea"
+    - "value": "" (always empty string)
+    - "help": guidance for completing this field
+
+Base section structure on the research findings."""
+    draft_payload = {}
+    for _attempt in range(2):
+        try:
+            draft_payload, _ = await _call_llm_runner_json(
+                [{"role": "user", "content": draft_prompt}],
+                provider=provider, model=model,
+                use_case="json", max_tokens=3200, timeout=180.0,
+            )
+            break
+        except Exception as exc:
+            logger.warning("test-intake outline attempt %d failed: %s", _attempt + 1, exc)
+            if _attempt < 1:
+                await asyncio.sleep(3.0)
+    draft_payload = _json_dict(draft_payload)
+    draft_payload["artifact_template"] = session.get("artifact_template") or config["label"]
+    draft_payload["updated_at"] = datetime.now(timezone.utc).isoformat()
+    template_draft = _normalize_generate_template_draft(draft_payload)
+    await _update_generate_task_session_row(
+        workspace_id, task_id,
+        GenerateTaskUpdateRequest(
+            current_step="research", status="intake_ready",
+            linked_research_id=linked_research_id,
+            template_draft=template_draft,
+        ),
+    )
+
+    # --- Phase 3: Approve outline → derive intake (questions + autofill) ---
+    session = await _get_generate_task_session(workspace_id, task_id)
+    intake_result = await _derive_generate_run_intake(workspace_id, task_id, session)
+    final_session = intake_result.get("session") or await _get_generate_task_session(workspace_id, task_id)
+
+    # --- Summary ---
+    question_plan = final_session.get("question_plan") or []
+    template_draft = final_session.get("template_draft") or {}
+    answers = final_session.get("answers") or {}
+    grounding_pack = final_session.get("grounding_pack") or {}
+    autofill_answers = intake_result.get("autofill_answers") or {}
+    sections = template_draft.get("sections") or []
+    filled = sum(1 for v in answers.values() if v)
+    return {
+        "test": "intake_flow",
+        "question_plan_count": len(question_plan),
+        "template_draft_sections": len(sections),
+        "answers_total": len(answers),
+        "answers_filled": filled,
+        "grounding_pack_keys": list(grounding_pack.keys()),
+        "autofill_filled": len(autofill_answers),
+        "current_step": final_session.get("current_step"),
+        "rendering": "question_form_only" if question_plan else ("draft_preview_fallback" if sections else "no_draft"),
+        "question_sections": list({q.get("section", "") for q in question_plan}),
+    }
+
+
 def _task_question_lookup(session: dict[str, Any], question_key: str) -> dict[str, Any]:
     for item in session.get("question_plan") or []:
         if isinstance(item, dict) and item.get("key") == question_key:
