@@ -33,7 +33,7 @@ ENV FASTEMBED_CACHE_PATH=/models/fastembed
 RUN python -c "from fastembed import TextEmbedding; TextEmbedding(model_name='BAAI/bge-small-en-v1.5', cache_dir='/models/fastembed')"
 
 COPY models.py db_schema.py llm.py document_processing.py canvas_client.py ./
-COPY config.py ./
+COPY config.py dependencies.py middleware.py ./
 COPY core/ core/
 COPY static/ static/
 COPY main_live.py main_live.py

@@ -88,9 +88,6 @@ def embed_texts(texts: list[str]) -> list[list[float]]:
     return [e.tolist() for e in embeddings]
 
 
-db_pool: asyncpg.Pool | None = None
-piper_voice: PiperVoice | None = None
-minio_client = None  # aiobotocore S3 client session
 
 from models import (  # noqa: E402
     WorkspaceCreate, FolderCreate, FolderUpdate, WorkspaceUpdate, WorkspaceFolderUpdate,
@@ -109,18 +106,16 @@ from core.database import init_db_pool
 
 
 async def init_db():
-    global db_pool
-    db_pool = await init_db_pool()
+    app.state.db_pool = await init_db_pool()
 
 
 async def _init_minio():
     """Initialize MinIO client and ensure bucket exists."""
-    global minio_client
     try:
         import aiobotocore.session as aio_session
         session = aio_session.get_session()
         # Store session for later use; create client per-request via context manager
-        minio_client = session
+        app.state.minio_client = session
         # Verify connectivity and create bucket if missing
         async with session.create_client(
             "s3",
@@ -137,7 +132,7 @@ async def _init_minio():
                 logger.info("MinIO bucket '%s' created", MINIO_BUCKET)
     except Exception as e:
         logger.warning("MinIO init failed (documents will be unavailable): %s", e)
-        minio_client = None
+        app.state.minio_client = None
 
 
 async def _check_service_dns() -> None:
@@ -181,8 +176,8 @@ async def _check_service_dns() -> None:
 
 @asynccontextmanager
 async def lifespan(app):
-    global piper_voice
     await init_db()
+    app.state.llm_runner_service = create_llm_runner_service(LLM_RUNNER_URL)
     await _init_minio()
     await _check_service_dns()
     asyncio.create_task(_backfill_meeting_chunks())
@@ -211,45 +206,21 @@ async def lifespan(app):
     except Exception as _e:
         logger.warning("Failed to pre-warm Keycloak metadata: %s", _e)
     if os.path.exists(PIPER_MODEL_PATH):
-        piper_voice = PiperVoice.load(PIPER_MODEL_PATH)
-        logger.info("Piper TTS loaded: sample_rate=%d", piper_voice.config.sample_rate)
+        app.state.piper_voice = PiperVoice.load(PIPER_MODEL_PATH)
+        logger.info("Piper TTS loaded: sample_rate=%d", app.state.piper_voice.config.sample_rate)
         # Warm up ONNX runtime to avoid ~500ms cold-start on first request
-        await asyncio.to_thread(lambda: list(piper_voice.synthesize("Hello.")))
+        await asyncio.to_thread(lambda: list(app.state.piper_voice.synthesize("Hello.")))
         logger.info("Piper ONNX runtime warmed up")
     else:
         logger.warning("Piper model not found at %s — streaming TTS disabled", PIPER_MODEL_PATH)
     yield
-    if db_pool:
-        await db_pool.close()
+    if app.state.db_pool:
+        await app.state.db_pool.close()
 
 
 app = FastAPI(title="Meeting Analyzer", lifespan=lifespan)
 
-
-class _StripPrefixMiddleware:
-    """Strip APP_PATH_PREFIX from request paths when the reverse proxy hasn't done it.
-
-    Nginx rewrites /meeting-analyzer/foo → /foo before forwarding, so the pod
-    normally sees only the stripped path. When the app is accessed directly
-    (e.g. via a Tailscale port that tunnels straight to the pod), the full
-    prefixed path arrives and this middleware strips it so routing works the
-    same either way.
-    """
-
-    def __init__(self, asgi_app, prefix: str):
-        self.app = asgi_app
-        self.prefix = prefix.rstrip("/").encode()
-
-    async def __call__(self, scope, receive, send):
-        if scope["type"] in ("http", "websocket") and self.prefix:
-            raw = scope.get("raw_path", b"")
-            if raw == self.prefix or raw.startswith(self.prefix + b"/"):
-                stripped = raw[len(self.prefix):] or b"/"
-                scope = dict(scope)
-                scope["raw_path"] = stripped
-                scope["path"] = stripped.decode("latin-1")
-        await self.app(scope, receive, send)
-
+from middleware import _StripPrefixMiddleware, auth_middleware, _sign_user_id, AUTH_EXEMPT_PREFIXES  # noqa: E402
 
 if APP_PATH_PREFIX:
     app.add_middleware(_StripPrefixMiddleware, prefix=APP_PATH_PREFIX)
@@ -262,31 +233,7 @@ app.add_middleware(
     max_age=3600 * 24,  # 24 hours
 )
 
-AUTH_EXEMPT_PREFIXES = ("/health", "/auth/", "/docs", "/openapi.json")
-
-
-def _sign_user_id(user_id: str) -> str:
-    """Sign a user_id with the session secret to prevent header forgery."""
-    secret = SESSION_SECRET_KEY or ""
-    return hashlib.sha256(f"{user_id}:{secret}".encode()).hexdigest()[:16]
-
-
-@app.middleware("http")
-async def auth_middleware(request: Request, call_next):
-    path = request.url.path
-    if any(path.startswith(p) for p in AUTH_EXEMPT_PREFIXES) or path == "/":
-        return await call_next(request)
-    # Read user_id from X-User-Id header (injected by page JS from authenticated session)
-    user_id = request.headers.get("x-user-id")
-    user_sig = request.headers.get("x-user-sig")
-    if user_id and user_sig:
-        expected_sig = _sign_user_id(user_id)
-        if user_sig != expected_sig:
-            user_id = None  # signature mismatch — reject
-    else:
-        user_id = None
-    request.state.user_id = user_id
-    return await call_next(request)
+app.middleware("http")(auth_middleware)
 
 
 # Configure OAuth with Keycloak
@@ -444,7 +391,7 @@ def _default_llm_preferences_from_catalog() -> dict[str, dict[str, str | None]]:
 
 
 async def _get_global_llm_defaults() -> dict[str, dict[str, str | None]]:
-    async with db_pool.acquire() as conn:
+    async with app.state.db_pool.acquire() as conn:
         row = await conn.fetchrow(
             "SELECT value FROM app_settings WHERE key = 'llm_defaults'"
         )
@@ -455,7 +402,7 @@ async def _get_global_llm_defaults() -> dict[str, dict[str, str | None]]:
 
 async def _set_global_llm_defaults(prefs: dict[str, dict[str, str | None]]) -> dict[str, dict[str, str | None]]:
     merged = _merge_llm_preferences(prefs)
-    async with db_pool.acquire() as conn:
+    async with app.state.db_pool.acquire() as conn:
         await conn.execute(
             """
             INSERT INTO app_settings (key, value, updated_at)
@@ -524,7 +471,7 @@ async def _get_workspace_llm_preferences(workspace_id: int | None) -> dict[str, 
     global_defaults = await _get_global_llm_defaults()
     if not workspace_id:
         return global_defaults
-    async with db_pool.acquire() as conn:
+    async with app.state.db_pool.acquire() as conn:
         row = await conn.fetchrow(
             "SELECT llm_preferences FROM workspaces WHERE id = $1",
             workspace_id,
@@ -535,7 +482,7 @@ async def _get_workspace_llm_preferences(workspace_id: int | None) -> dict[str, 
 
 
 async def _ensure_workspace_exists(workspace_id: int, user_id: str | None = None) -> None:
-    async with db_pool.acquire() as conn:
+    async with app.state.db_pool.acquire() as conn:
         if user_id:
             row = await conn.fetchrow(
                 """SELECT w.id FROM workspaces w
@@ -562,7 +509,7 @@ async def _ensure_workspace_owner(request: Request, workspace_id: int) -> None:
     uid = getattr(request.state, 'user_id', None)
     if not uid:
         return  # unauthenticated mode
-    async with db_pool.acquire() as conn:
+    async with app.state.db_pool.acquire() as conn:
         owner = await conn.fetchval("SELECT user_id FROM workspaces WHERE id = $1", workspace_id)
     if owner != uid:
         raise HTTPException(status_code=403, detail="Owner access required")
@@ -607,7 +554,6 @@ from llm import (  # noqa: E402
     create_llm_runner_service,
 )
 
-llm_runner_service = create_llm_runner_service(LLM_RUNNER_URL)
 
 
 async def _search_web(query: str, max_results: int = 5, delay: float = 0.0) -> list[dict[str, str]]:
@@ -1474,7 +1420,7 @@ async def index(request: Request):
         email = user.get("email", "")
         name = user.get("name", user.get("preferred_username", ""))
         try:
-            async with db_pool.acquire() as conn:
+            async with app.state.db_pool.acquire() as conn:
                 await conn.execute(
                     "INSERT INTO users (id, email, name, last_login_at) VALUES ($1, $2, $3, NOW()) "
                     "ON CONFLICT (id) DO UPDATE SET email = $2, name = $3, last_login_at = NOW()",
@@ -1511,7 +1457,7 @@ async def health_live():
 async def health_ready():
     """Readiness probe — checks database connectivity, returns 503 if down."""
     try:
-        async with db_pool.acquire() as conn:
+        async with app.state.db_pool.acquire() as conn:
             await conn.fetchval("SELECT 1")
         return {"status": "ready"}
     except Exception as exc:
@@ -1532,7 +1478,7 @@ async def _get_google_token(request: Request) -> str | None:
     uid = getattr(request.state, "user_id", None)
     if not uid or not db_pool:
         return None
-    async with db_pool.acquire() as conn:
+    async with app.state.db_pool.acquire() as conn:
         row = await conn.fetchrow(
             "SELECT google_access_token, google_refresh_token FROM user_tokens WHERE user_id = $1", uid,
         )
@@ -1570,7 +1516,7 @@ async def _get_google_token(request: Request) -> str | None:
         if resp.is_success:
             new_token = resp.json().get("access_token", "")
             if new_token:
-                async with db_pool.acquire() as conn:
+                async with app.state.db_pool.acquire() as conn:
                     await conn.execute(
                         "UPDATE user_tokens SET google_access_token = $1, updated_at = NOW() WHERE user_id = $2",
                         new_token, uid,
@@ -1645,7 +1591,7 @@ async def drive_callback(request: Request, code: str = "", error: str = "", stat
         google_refresh_token = tokens.get("refresh_token", "")
 
         # Store Google Drive tokens in DB
-        async with db_pool.acquire() as conn:
+        async with app.state.db_pool.acquire() as conn:
             await conn.execute(
                 """INSERT INTO user_tokens (user_id, google_access_token, google_refresh_token, updated_at)
                    VALUES ($1, $2, $3, NOW())
@@ -1780,7 +1726,7 @@ async def drive_import_files(request: Request, workspace_id: int, body: dict):
                     object_key = None
 
                 # Insert document record
-                async with db_pool.acquire() as conn:
+                async with app.state.db_pool.acquire() as conn:
                     row = await conn.fetchrow(
                         """INSERT INTO documents (workspace_id, filename, object_key, file_size, mime_type, uploaded_at)
                            VALUES ($1, $2, $3, $4, $5, NOW()) RETURNING id""",
@@ -1793,7 +1739,7 @@ async def drive_import_files(request: Request, workspace_id: int, body: dict):
                     None, _extract_text_sync, file_bytes, mime_type, filename
                 )
                 if extracted:
-                    async with db_pool.acquire() as conn:
+                    async with app.state.db_pool.acquire() as conn:
                         await conn.execute(
                             "UPDATE documents SET extracted_text = $1 WHERE id = $2",
                             extracted, doc_id,
@@ -1819,7 +1765,7 @@ async def library_list(request: Request):
     if not uid:
         raise HTTPException(status_code=401, detail="Not authenticated")
 
-    async with db_pool.acquire() as conn:
+    async with app.state.db_pool.acquire() as conn:
         # Owned documents
         own_docs = await conn.fetch(
             """SELECT id, filename, file_size, mime_type, workspace_id, uploaded_at, executive_summary,
@@ -1917,7 +1863,7 @@ async def library_share(request: Request, body: dict):
     if not content_id or not share_with_email:
         raise HTTPException(status_code=400, detail="content_id and share_with_email are required")
 
-    async with db_pool.acquire() as conn:
+    async with app.state.db_pool.acquire() as conn:
         # Find target user by email
         target = await conn.fetchrow("SELECT id, name, email FROM users WHERE LOWER(email) = $1", share_with_email)
         if not target:
@@ -1955,7 +1901,7 @@ async def library_unshare(request: Request, share_id: int):
     uid = getattr(request.state, "user_id", None)
     if not uid:
         raise HTTPException(status_code=401, detail="Not authenticated")
-    async with db_pool.acquire() as conn:
+    async with app.state.db_pool.acquire() as conn:
         await conn.execute(
             "DELETE FROM content_shares WHERE id = $1 AND owner_user_id = $2",
             share_id, uid,
@@ -1969,7 +1915,7 @@ async def library_get_shares(request: Request, content_type: str, content_id: in
     uid = getattr(request.state, "user_id", None)
     if not uid:
         raise HTTPException(status_code=401, detail="Not authenticated")
-    async with db_pool.acquire() as conn:
+    async with app.state.db_pool.acquire() as conn:
         rows = await conn.fetch(
             """SELECT cs.id, cs.shared_with_user_id, cs.permission, cs.shared_at,
                       u.name, u.email
@@ -1997,7 +1943,7 @@ async def workspace_link_content(request: Request, workspace_id: int, body: dict
     if not content_id:
         raise HTTPException(status_code=400, detail="content_id required")
 
-    async with db_pool.acquire() as conn:
+    async with app.state.db_pool.acquire() as conn:
         await conn.execute(
             """INSERT INTO workspace_content_links (workspace_id, content_type, content_id, linked_by)
                VALUES ($1, $2, $3, $4)
@@ -2011,7 +1957,7 @@ async def workspace_link_content(request: Request, workspace_id: int, body: dict
 async def workspace_unlink_content(request: Request, workspace_id: int, content_type: str, content_id: int):
     """Unlink content from a workspace."""
     await _ensure_user_workspace(request, workspace_id)
-    async with db_pool.acquire() as conn:
+    async with app.state.db_pool.acquire() as conn:
         await conn.execute(
             "DELETE FROM workspace_content_links WHERE workspace_id = $1 AND content_type = $2 AND content_id = $3",
             workspace_id, content_type, content_id,
@@ -2023,7 +1969,7 @@ async def workspace_unlink_content(request: Request, workspace_id: int, content_
 async def workspace_linked_content(request: Request, workspace_id: int):
     """List all content linked to a workspace from libraries."""
     await _ensure_user_workspace(request, workspace_id)
-    async with db_pool.acquire() as conn:
+    async with app.state.db_pool.acquire() as conn:
         links = await conn.fetch(
             """SELECT wcl.content_type, wcl.content_id, wcl.linked_by, wcl.linked_at,
                       CASE
@@ -2068,7 +2014,7 @@ async def library_upload_document(request: Request, file: UploadFile = File(...)
         object_key = f"library-fallback-{uuid.uuid4()}"
 
     # Insert document record (no workspace)
-    async with db_pool.acquire() as conn:
+    async with app.state.db_pool.acquire() as conn:
         row = await conn.fetchrow(
             """INSERT INTO documents (filename, object_key, file_size, mime_type, user_id, uploaded_at)
                VALUES ($1, $2, $3, $4, $5, NOW()) RETURNING id""",
@@ -2079,7 +2025,7 @@ async def library_upload_document(request: Request, file: UploadFile = File(...)
     # Extract text in background
     extracted = await asyncio.get_event_loop().run_in_executor(None, _extract_text_sync, data, mime_type, filename)
     if extracted:
-        async with db_pool.acquire() as conn:
+        async with app.state.db_pool.acquire() as conn:
             await conn.execute("UPDATE documents SET extracted_text = $1 WHERE id = $2", extracted, doc_id)
 
     return {"id": doc_id, "filename": filename, "size": len(data), "has_text": bool(extracted)}
@@ -2157,7 +2103,7 @@ async def _sync_single_drive_file(
     if existing_doc:
         # Check if filename changed (rename in Drive)
         if existing_doc.get("filename") and fname != existing_doc["filename"]:
-            async with db_pool.acquire() as conn:
+            async with app.state.db_pool.acquire() as conn:
                 await conn.execute(
                     "UPDATE documents SET filename = $1 WHERE id = $2",
                     fname, existing_doc["id"],
@@ -2167,7 +2113,7 @@ async def _sync_single_drive_file(
         if modified_dt and existing_doc["drive_modified_time"] and modified_dt <= existing_doc["drive_modified_time"]:
             # File not modified — but check if analysis is missing
             if not existing_doc.get("has_summary"):
-                async with db_pool.acquire() as conn:
+                async with app.state.db_pool.acquire() as conn:
                     row = await conn.fetchrow(
                         "SELECT extracted_text, executive_summary FROM documents WHERE id = $1", existing_doc["id"],
                     )
@@ -2181,7 +2127,7 @@ async def _sync_single_drive_file(
         doc_id = existing_doc["id"]
         result["updated"] = 1
     else:
-        async with db_pool.acquire() as conn:
+        async with app.state.db_pool.acquire() as conn:
             row = await conn.fetchrow(
                 """INSERT INTO documents (workspace_id, filename, file_size, mime_type, drive_file_id, drive_modified_time, user_id, folder_path, uploaded_at)
                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW())
@@ -2220,7 +2166,7 @@ async def _sync_single_drive_file(
                 )
                 if extracted:
                     extracted = extracted.replace("\x00", "")
-                    async with db_pool.acquire() as conn:
+                    async with app.state.db_pool.acquire() as conn:
                         await conn.execute(
                             "UPDATE documents SET extracted_text = $1, drive_modified_time = $2, file_size = $3 WHERE id = $4",
                             extracted, modified_dt, len(file_bytes), doc_id,
@@ -2240,7 +2186,7 @@ async def _sync_single_drive_file(
 async def _sync_workspace_drive(workspace_id: int, user_id: str) -> dict:
     """Sync a workspace's documents with its linked Google Drive folders.
     Uses Changes API for incremental sync after first full sync."""
-    async with db_pool.acquire() as conn:
+    async with app.state.db_pool.acquire() as conn:
         ws = await conn.fetchrow(
             "SELECT drive_folder_id, drive_folder_name, drive_folders, drive_changes_token FROM workspaces WHERE id = $1",
             workspace_id,
@@ -2290,7 +2236,7 @@ async def _sync_workspace_drive(workspace_id: int, user_id: str) -> dict:
         drive_files = deduped
 
         # Get existing
-        async with db_pool.acquire() as conn:
+        async with app.state.db_pool.acquire() as conn:
             existing = await conn.fetch(
                 "SELECT id, drive_file_id, drive_modified_time, filename, (executive_summary IS NOT NULL AND executive_summary != '') as has_summary FROM documents WHERE workspace_id = $1 AND drive_file_id IS NOT NULL",
                 workspace_id,
@@ -2301,7 +2247,7 @@ async def _sync_workspace_drive(workspace_id: int, user_id: str) -> dict:
         # Remove deleted
         for drive_fid, doc in existing_map.items():
             if drive_fid not in drive_file_ids:
-                async with db_pool.acquire() as conn:
+                async with app.state.db_pool.acquire() as conn:
                     await conn.execute("DELETE FROM documents WHERE id = $1", doc["id"])
                 removed += 1
 
@@ -2327,7 +2273,7 @@ async def _sync_workspace_drive(workspace_id: int, user_id: str) -> dict:
     else:
         # Incremental sync via Changes API
         logger.info("Drive sync workspace %s: incremental (token=%s)", workspace_id, changes_token[:20])
-        async with db_pool.acquire() as conn:
+        async with app.state.db_pool.acquire() as conn:
             existing = await conn.fetch(
                 "SELECT id, drive_file_id, drive_modified_time, filename, (executive_summary IS NOT NULL AND executive_summary != '') as has_summary FROM documents WHERE workspace_id = $1 AND drive_file_id IS NOT NULL",
                 workspace_id,
@@ -2368,7 +2314,7 @@ async def _sync_workspace_drive(workspace_id: int, user_id: str) -> dict:
 
                     if is_removed or is_trashed:
                         if file_id in existing_map:
-                            async with db_pool.acquire() as conn:
+                            async with app.state.db_pool.acquire() as conn:
                                 await conn.execute("DELETE FROM documents WHERE id = $1", existing_map[file_id]["id"])
                             removed += 1
                     elif f.get("mimeType") != "application/vnd.google-apps.folder":
@@ -2385,7 +2331,7 @@ async def _sync_workspace_drive(workspace_id: int, user_id: str) -> dict:
 
     # Catch-up: analyze docs that have text but no summary
     analyzed = 0
-    async with db_pool.acquire() as conn:
+    async with app.state.db_pool.acquire() as conn:
         unanalyzed = await conn.fetch(
             """SELECT id, filename, extracted_text FROM documents
                WHERE workspace_id = $1 AND drive_file_id IS NOT NULL
@@ -2402,7 +2348,7 @@ async def _sync_workspace_drive(workspace_id: int, user_id: str) -> dict:
             logger.warning("Drive sync: analysis failed for %s: %s", row["filename"], exc)
 
     # Update last synced time + changes token
-    async with db_pool.acquire() as conn:
+    async with app.state.db_pool.acquire() as conn:
         await conn.execute(
             "UPDATE workspaces SET drive_last_synced_at = NOW(), drive_changes_token = $1 WHERE id = $2",
             changes_token or None, workspace_id,
@@ -2421,7 +2367,7 @@ async def workspace_drive_link(request: Request, workspace_id: int, body: dict):
     if not folder_id:
         raise HTTPException(status_code=400, detail="folder_id is required")
 
-    async with db_pool.acquire() as conn:
+    async with app.state.db_pool.acquire() as conn:
         row = await conn.fetchrow("SELECT drive_folders FROM workspaces WHERE id = $1", workspace_id)
         existing = row["drive_folders"] if row and row["drive_folders"] else []
         # Don't add duplicate
@@ -2439,7 +2385,7 @@ async def workspace_drive_unlink(request: Request, workspace_id: int, body: dict
     """Remove a Drive folder from a workspace. If folder_id provided, remove just that one. Otherwise remove all."""
     await _ensure_user_workspace(request, workspace_id)
     folder_id = body.get("folder_id", "") if body else ""
-    async with db_pool.acquire() as conn:
+    async with app.state.db_pool.acquire() as conn:
         if folder_id:
             row = await conn.fetchrow("SELECT drive_folders FROM workspaces WHERE id = $1", workspace_id)
             existing = row["drive_folders"] if row and row["drive_folders"] else []
@@ -2474,7 +2420,7 @@ async def workspace_drive_sync(request: Request, workspace_id: int):
 async def workspace_drive_status(request: Request, workspace_id: int):
     """Get the Drive link status for a workspace."""
     await _ensure_user_workspace(request, workspace_id)
-    async with db_pool.acquire() as conn:
+    async with app.state.db_pool.acquire() as conn:
         ws = await conn.fetchrow(
             "SELECT drive_folder_id, drive_folder_name, drive_folders, drive_last_synced_at FROM workspaces WHERE id = $1",
             workspace_id,
@@ -2506,7 +2452,7 @@ async def _get_canvas_token(request: Request) -> tuple[str | None, str | None]:
     uid = getattr(request.state, "user_id", None)
     if not uid or not db_pool:
         return None, None
-    async with db_pool.acquire() as conn:
+    async with app.state.db_pool.acquire() as conn:
         row = await conn.fetchrow(
             "SELECT canvas_access_token, canvas_instance_url FROM user_tokens WHERE user_id = $1", uid,
         )
@@ -2566,7 +2512,7 @@ async def canvas_connect(request: Request, body: dict = Body(...)):
         raise HTTPException(status_code=400, detail=f"Failed to connect to Canvas: {exc}")
 
     # Store the token
-    async with db_pool.acquire() as conn:
+    async with app.state.db_pool.acquire() as conn:
         await conn.execute(
             """INSERT INTO user_tokens (user_id, canvas_access_token, canvas_instance_url, updated_at)
                VALUES ($1, $2, $3, NOW())
@@ -2586,7 +2532,7 @@ async def canvas_disconnect(request: Request):
     if not uid:
         raise HTTPException(status_code=401, detail="Not authenticated")
 
-    async with db_pool.acquire() as conn:
+    async with app.state.db_pool.acquire() as conn:
         await conn.execute(
             "UPDATE user_tokens SET canvas_access_token = NULL, canvas_instance_url = NULL WHERE user_id = $1",
             uid,
@@ -2642,7 +2588,7 @@ async def workspace_canvas_link(request: Request, workspace_id: int, body: dict 
         raise HTTPException(status_code=500, detail=str(exc))
 
     # Update workspace with Canvas link
-    async with db_pool.acquire() as conn:
+    async with app.state.db_pool.acquire() as conn:
         await conn.execute(
             """UPDATE workspaces
                SET canvas_course_id = $1, canvas_instance_url = $2, canvas_course_name = $3, canvas_last_synced_at = NULL
@@ -2657,7 +2603,7 @@ async def workspace_canvas_link(request: Request, workspace_id: int, body: dict 
 async def workspace_canvas_unlink(request: Request, workspace_id: int):
     """Unlink a workspace from its Canvas course."""
     await _ensure_user_workspace(request, workspace_id)
-    async with db_pool.acquire() as conn:
+    async with app.state.db_pool.acquire() as conn:
         await conn.execute(
             """UPDATE workspaces
                SET canvas_course_id = NULL, canvas_instance_url = NULL, canvas_course_name = NULL, canvas_last_synced_at = NULL
@@ -2671,7 +2617,7 @@ async def workspace_canvas_unlink(request: Request, workspace_id: int):
 async def workspace_canvas_status(request: Request, workspace_id: int):
     """Get the Canvas link status for a workspace."""
     await _ensure_user_workspace(request, workspace_id)
-    async with db_pool.acquire() as conn:
+    async with app.state.db_pool.acquire() as conn:
         ws = await conn.fetchrow(
             "SELECT canvas_course_id, canvas_instance_url, canvas_course_name, canvas_last_synced_at FROM workspaces WHERE id = $1",
             workspace_id,
@@ -2695,7 +2641,7 @@ async def _sync_workspace_canvas(workspace_id: int, user_id: str) -> dict:
     - Files as documents (with vectorization)
     - Syllabus as a document
     """
-    async with db_pool.acquire() as conn:
+    async with app.state.db_pool.acquire() as conn:
         ws = await conn.fetchrow(
             "SELECT canvas_course_id, canvas_instance_url, canvas_course_name FROM workspaces WHERE id = $1",
             workspace_id,
@@ -2743,7 +2689,7 @@ async def _sync_workspace_canvas(workspace_id: int, user_id: str) -> dict:
             if html_url:
                 notes += f"\n\nView in Canvas: {html_url}"
 
-            async with db_pool.acquire() as conn:
+            async with app.state.db_pool.acquire() as conn:
                 # Upsert calendar event
                 existing = await conn.fetchrow(
                     "SELECT id FROM calendar_events WHERE workspace_id = $1 AND source_type = 'canvas' AND source_id = $2",
@@ -2783,7 +2729,7 @@ async def _sync_workspace_canvas(workspace_id: int, user_id: str) -> dict:
                 continue
 
             # Check if already synced
-            async with db_pool.acquire() as conn:
+            async with app.state.db_pool.acquire() as conn:
                 existing = await conn.fetchrow(
                     "SELECT id, canvas_modified_at FROM documents WHERE workspace_id = $1 AND canvas_file_id = $2",
                     workspace_id, file_id,
@@ -2823,7 +2769,7 @@ async def _sync_workspace_canvas(workspace_id: int, user_id: str) -> dict:
                 continue
 
             # Insert/update document record
-            async with db_pool.acquire() as conn:
+            async with app.state.db_pool.acquire() as conn:
                 mod_dt = date_parser.parse(modified_at) if isinstance(modified_at, str) else modified_at
                 if existing:
                     await conn.execute(
@@ -2845,7 +2791,7 @@ async def _sync_workspace_canvas(workspace_id: int, user_id: str) -> dict:
             try:
                 extracted_text = await _extract_document_text(object_key, mime_type, content)
                 if extracted_text:
-                    async with db_pool.acquire() as conn:
+                    async with app.state.db_pool.acquire() as conn:
                         await conn.execute(
                             "UPDATE documents SET extracted_text = $1 WHERE id = $2",
                             extracted_text, doc_id,
@@ -2884,7 +2830,7 @@ async def _sync_workspace_canvas(workspace_id: int, user_id: str) -> dict:
                 ) as s3:
                     await s3.put_object(Bucket=MINIO_BUCKET, Key=syllabus_key, Body=syllabus_body.encode())
 
-                async with db_pool.acquire() as conn:
+                async with app.state.db_pool.acquire() as conn:
                     existing = await conn.fetchrow(
                         "SELECT id FROM documents WHERE workspace_id = $1 AND canvas_file_id = 'syllabus'",
                         workspace_id,
@@ -2911,7 +2857,7 @@ async def _sync_workspace_canvas(workspace_id: int, user_id: str) -> dict:
         errors.append(f"Syllabus: {exc}")
 
     # Update last synced timestamp
-    async with db_pool.acquire() as conn:
+    async with app.state.db_pool.acquire() as conn:
         await conn.execute(
             "UPDATE workspaces SET canvas_last_synced_at = NOW() WHERE id = $1",
             workspace_id,
@@ -3093,7 +3039,7 @@ async def require_user(request: Request) -> dict:
         raise HTTPException(status_code=401, detail="Invalid user session")
     email = session_user.get("email", "")
     name = session_user.get("name", session_user.get("preferred_username", ""))
-    async with db_pool.acquire() as conn:
+    async with app.state.db_pool.acquire() as conn:
         await conn.execute(
             "INSERT INTO users (id, email, name, last_login_at) VALUES ($1, $2, $3, NOW()) "
             "ON CONFLICT (id) DO UPDATE SET email = $2, name = $3, last_login_at = NOW()",
@@ -3138,7 +3084,7 @@ async def auth_callback(request: Request):
     user_id_for_token = user.get("sub") or user.get("id") or ""
     if user_id_for_token and db_pool:
         try:
-            async with db_pool.acquire() as conn:
+            async with app.state.db_pool.acquire() as conn:
                 await conn.execute(
                     """INSERT INTO user_tokens (user_id, access_token, refresh_token, updated_at)
                        VALUES ($1, $2, $3, NOW())
@@ -3153,7 +3099,7 @@ async def auth_callback(request: Request):
     if user_id:
         email = user.get("email", "")
         name = user.get("name", user.get("preferred_username", ""))
-        async with db_pool.acquire() as conn:
+        async with app.state.db_pool.acquire() as conn:
             await conn.execute(
                 "INSERT INTO users (id, email, name, last_login_at) VALUES ($1, $2, $3, NOW()) "
                 "ON CONFLICT (id) DO UPDATE SET email = $2, name = $3, last_login_at = NOW()",
@@ -3206,21 +3152,21 @@ async def tts_proxy(body: TTSRequest):
         raise HTTPException(status_code=400, detail="Text is required.")
 
     # Use in-process Piper when available (no network hop)
-    if piper_voice:
+    if app.state.piper_voice:
         import io
         import wave
 
         def _synthesize_wav():
             import numpy as np
             pcm_chunks = []
-            for audio_chunk in piper_voice.synthesize(text):
+            for audio_chunk in app.state.piper_voice.synthesize(text):
                 pcm_chunks.append((audio_chunk.audio_float_array * 32767).astype(np.int16).tobytes())
             pcm = b"".join(pcm_chunks)
             buf = io.BytesIO()
             with wave.open(buf, "wb") as wf:
                 wf.setnchannels(1)
                 wf.setsampwidth(2)
-                wf.setframerate(piper_voice.config.sample_rate)
+                wf.setframerate(app.state.piper_voice.config.sample_rate)
                 wf.writeframes(pcm)
             return buf.getvalue()
 
@@ -3252,7 +3198,7 @@ async def tts_proxy(body: TTSRequest):
 @app.get("/llm/models")
 async def list_llm_models():
     try:
-        return await llm_runner_service.get_json("/v1/models", timeout=30.0)
+        return await app.state.llm_runner_service.get_json("/v1/models", timeout=30.0)
     except Exception as exc:
         logger.warning("llm-runner /v1/models unavailable, using local fallback: %s", exc)
         return _fallback_llm_models()
@@ -3272,7 +3218,7 @@ async def put_global_llm_defaults(body: WorkspaceLLMPreferences):
 async def apply_global_llm_defaults(body: ApplyLLMDefaultsRequest):
     scope = (body.scope or "current").strip().lower()
     defaults = await _get_global_llm_defaults()
-    async with db_pool.acquire() as conn:
+    async with app.state.db_pool.acquire() as conn:
         if scope == "all":
             result = await conn.execute(
                 "UPDATE workspaces SET llm_preferences = $1::jsonb",
@@ -3298,7 +3244,7 @@ async def apply_global_llm_defaults(body: ApplyLLMDefaultsRequest):
 async def create_workspace(request: Request, body: WorkspaceCreate):
     uid = getattr(request.state, 'user_id', None)
     prefs = await _get_global_llm_defaults()
-    async with db_pool.acquire() as conn:
+    async with app.state.db_pool.acquire() as conn:
         row = await conn.fetchrow(
             "INSERT INTO workspaces (name, llm_preferences, folder_id, user_id) VALUES ($1, $2::jsonb, $3, $4) RETURNING id, name, created_at, folder_id",
             body.name,
@@ -3319,7 +3265,7 @@ async def get_workspace_llm_preferences(request: Request, workspace_id: int):
 async def put_workspace_llm_preferences(request: Request, workspace_id: int, body: WorkspaceLLMPreferences):
     await _ensure_user_workspace(request, workspace_id)
     prefs = _merge_llm_preferences(body.model_dump())
-    async with db_pool.acquire() as conn:
+    async with app.state.db_pool.acquire() as conn:
         result = await conn.execute(
             "UPDATE workspaces SET llm_preferences = $1::jsonb WHERE id = $2",
             json.dumps(prefs),
@@ -3333,7 +3279,7 @@ async def put_workspace_llm_preferences(request: Request, workspace_id: int, bod
 @app.get("/workspaces")
 async def list_workspaces(request: Request):
     uid = getattr(request.state, 'user_id', None)
-    async with db_pool.acquire() as conn:
+    async with app.state.db_pool.acquire() as conn:
         if uid:
             rows = await conn.fetch("""
                 SELECT w.id, w.name, w.created_at, w.folder_id, COUNT(m.id) AS meeting_count,
@@ -3361,7 +3307,7 @@ async def list_workspaces(request: Request):
 async def delete_workspace(request: Request, workspace_id: int):
     await _ensure_workspace_owner(request, workspace_id)
     uid = getattr(request.state, 'user_id', None)
-    async with db_pool.acquire() as conn:
+    async with app.state.db_pool.acquire() as conn:
         # Delete meetings explicitly (FK is ON DELETE SET NULL, not CASCADE)
         if uid:
             await conn.execute("DELETE FROM meetings WHERE workspace_id = $1 AND user_id = $2", workspace_id, uid)
@@ -3382,7 +3328,7 @@ async def delete_workspace(request: Request, workspace_id: int):
 async def update_workspace(request: Request, workspace_id: int, body: WorkspaceUpdate):
     await _ensure_workspace_owner(request, workspace_id)
     uid = getattr(request.state, 'user_id', None)
-    async with db_pool.acquire() as conn:
+    async with app.state.db_pool.acquire() as conn:
         if uid:
             result = await conn.execute(
                 "UPDATE workspaces SET name = $1 WHERE id = $2 AND user_id = $3",
@@ -3400,7 +3346,7 @@ async def update_workspace(request: Request, workspace_id: int, body: WorkspaceU
 async def move_workspace_to_folder(request: Request, workspace_id: int, body: WorkspaceFolderUpdate):
     await _ensure_workspace_owner(request, workspace_id)
     uid = getattr(request.state, 'user_id', None)
-    async with db_pool.acquire() as conn:
+    async with app.state.db_pool.acquire() as conn:
         if body.folder_id is not None:
             if uid:
                 folder = await conn.fetchrow("SELECT id FROM workspace_folders WHERE id = $1 AND user_id = $2", body.folder_id, uid)
@@ -3424,7 +3370,7 @@ async def move_workspace_to_folder(request: Request, workspace_id: int, body: Wo
 @app.get("/workspaces/{workspace_id}/shares")
 async def list_workspace_shares(request: Request, workspace_id: int):
     await _ensure_user_workspace(request, workspace_id)
-    async with db_pool.acquire() as conn:
+    async with app.state.db_pool.acquire() as conn:
         owner_row = await conn.fetchrow(
             "SELECT w.user_id, u.email, u.name FROM workspaces w LEFT JOIN users u ON u.id = w.user_id WHERE w.id = $1",
             workspace_id,
@@ -3456,7 +3402,7 @@ async def list_workspace_shares(request: Request, workspace_id: int):
 async def add_workspace_share(request: Request, workspace_id: int, body: WorkspaceShareRequest):
     await _ensure_workspace_owner(request, workspace_id)
     target_uid: str | None = None
-    async with db_pool.acquire() as conn:
+    async with app.state.db_pool.acquire() as conn:
         if body.user_id:
             row = await conn.fetchrow("SELECT id FROM users WHERE id = $1", body.user_id)
             if row:
@@ -3490,7 +3436,7 @@ async def add_workspace_share(request: Request, workspace_id: int, body: Workspa
 @app.delete("/workspaces/{workspace_id}/shares/{target_user_id}")
 async def remove_workspace_share(request: Request, workspace_id: int, target_user_id: str):
     await _ensure_workspace_owner(request, workspace_id)
-    async with db_pool.acquire() as conn:
+    async with app.state.db_pool.acquire() as conn:
         result = await conn.execute(
             "DELETE FROM workspace_shares WHERE workspace_id = $1 AND user_id = $2",
             workspace_id, target_user_id,
@@ -3510,7 +3456,7 @@ async def search_users(request: Request, q: str = Query(default="")):
     results: list[dict] = []
     seen_ids: set[str] = set()
     # Search local users table
-    async with db_pool.acquire() as conn:
+    async with app.state.db_pool.acquire() as conn:
         rows = await conn.fetch(
             "SELECT id, email, name FROM users WHERE (LOWER(email) LIKE $1 OR LOWER(name) LIKE $1) AND id != $2 LIMIT 10",
             f"%{query.lower()}%", uid or "",
@@ -3567,7 +3513,7 @@ async def _get_keycloak_admin_token() -> str | None:
 @app.get("/folders")
 async def list_folders(request: Request):
     uid = getattr(request.state, 'user_id', None)
-    async with db_pool.acquire() as conn:
+    async with app.state.db_pool.acquire() as conn:
         if uid:
             rows = await conn.fetch("""
                 SELECT f.id, f.name, f.parent_folder_id, f.created_at,
@@ -3597,7 +3543,7 @@ async def list_folders(request: Request):
 @app.post("/folders")
 async def create_folder(request: Request, body: FolderCreate):
     uid = getattr(request.state, 'user_id', None)
-    async with db_pool.acquire() as conn:
+    async with app.state.db_pool.acquire() as conn:
         if body.parent_folder_id is not None:
             parent = await conn.fetchrow("SELECT id FROM workspace_folders WHERE id = $1", body.parent_folder_id)
             if not parent:
@@ -3614,7 +3560,7 @@ async def create_folder(request: Request, body: FolderCreate):
 @app.patch("/folders/{folder_id}")
 async def update_folder(request: Request, folder_id: int, body: FolderUpdate):
     uid = getattr(request.state, 'user_id', None)
-    async with db_pool.acquire() as conn:
+    async with app.state.db_pool.acquire() as conn:
         if uid:
             folder = await conn.fetchrow("SELECT id, name, parent_folder_id FROM workspace_folders WHERE id = $1 AND user_id = $2", folder_id, uid)
         else:
@@ -3646,7 +3592,7 @@ async def update_folder(request: Request, folder_id: int, body: FolderUpdate):
 @app.delete("/folders/{folder_id}")
 async def delete_folder(request: Request, folder_id: int):
     uid = getattr(request.state, 'user_id', None)
-    async with db_pool.acquire() as conn:
+    async with app.state.db_pool.acquire() as conn:
         if uid:
             result = await conn.execute("DELETE FROM workspace_folders WHERE id = $1 AND user_id = $2", folder_id, uid)
         else:
@@ -3659,7 +3605,7 @@ async def delete_folder(request: Request, folder_id: int):
 @app.get("/workspaces/{workspace_id}/meetings")
 async def list_workspace_meetings(request: Request, workspace_id: int):
     await _ensure_user_workspace(request, workspace_id)
-    async with db_pool.acquire() as conn:
+    async with app.state.db_pool.acquire() as conn:
         rows = await conn.fetch(
             """SELECT m.id, m.title, m.filename, m.date, m.summary,
                       (SELECT count(*) FROM meeting_chunks mc WHERE mc.meeting_id = m.id AND mc.embedding IS NOT NULL) as embedded_chunks,
@@ -3676,7 +3622,7 @@ async def list_workspace_meetings(request: Request, workspace_id: int):
 @app.get("/meetings")
 async def list_meetings(request: Request, unorganized: bool = Query(default=False)):
     uid = getattr(request.state, 'user_id', None)
-    async with db_pool.acquire() as conn:
+    async with app.state.db_pool.acquire() as conn:
         if uid:
             if unorganized:
                 rows = await conn.fetch(
@@ -3700,7 +3646,7 @@ async def list_meetings(request: Request, unorganized: bool = Query(default=Fals
 
 @app.get("/meetings/{meeting_id}")
 async def get_meeting(meeting_id: int):
-    async with db_pool.acquire() as conn:
+    async with app.state.db_pool.acquire() as conn:
         row = await conn.fetchrow(
             """SELECT m.id, m.title, m.filename, m.date, m.transcript, m.summary, m.action_items,
                       m.todos, m.email_body, m.workspace_id, w.name AS workspace_name
@@ -3723,7 +3669,7 @@ async def get_meeting(meeting_id: int):
 
 @app.delete("/meetings/{meeting_id}")
 async def delete_meeting(meeting_id: int):
-    async with db_pool.acquire() as conn:
+    async with app.state.db_pool.acquire() as conn:
         result = await conn.execute("DELETE FROM meetings WHERE id = $1", meeting_id)
     if result == "DELETE 0":
         raise HTTPException(status_code=404, detail="Meeting not found")
@@ -3736,7 +3682,7 @@ async def update_meeting(meeting_id: int, body: dict):
     title = (body.get("title") or "").strip()
     if not title:
         raise HTTPException(status_code=400, detail="title is required")
-    async with db_pool.acquire() as conn:
+    async with app.state.db_pool.acquire() as conn:
         result = await conn.execute(
             "UPDATE meetings SET title = $1 WHERE id = $2",
             title, meeting_id,
@@ -3751,7 +3697,7 @@ async def move_meeting_to_workspace(request: Request, meeting_id: int, body: Mee
     target_workspace_id = body.workspace_id
     if target_workspace_id is not None:
         await _ensure_user_workspace(request, target_workspace_id)
-    async with db_pool.acquire() as conn:
+    async with app.state.db_pool.acquire() as conn:
         result = await conn.execute(
             "UPDATE meetings SET workspace_id = $1 WHERE id = $2",
             target_workspace_id,
@@ -3767,7 +3713,7 @@ async def merge_meetings(request: Request, body: MeetingMergeRequest):
     if len(body.meeting_ids) < 2:
         raise HTTPException(status_code=400, detail="At least 2 meeting IDs required")
     uid = getattr(request.state, 'user_id', None)
-    async with db_pool.acquire() as conn:
+    async with app.state.db_pool.acquire() as conn:
         rows = await conn.fetch(
             "SELECT id, title, filename, date, transcript, workspace_id, user_id "
             "FROM meetings WHERE id = ANY($1) ORDER BY date ASC",
@@ -3793,9 +3739,9 @@ async def merge_meetings(request: Request, body: MeetingMergeRequest):
     merged_filename = f"merged-{len(rows)}-recordings"
     new_id = await save_meeting(merged_filename, combined_transcript, analysis, target_ws, uid)
     if body.delete_originals:
-        async with db_pool.acquire() as conn:
+        async with app.state.db_pool.acquire() as conn:
             await conn.execute("DELETE FROM meetings WHERE id = ANY($1)", body.meeting_ids)
-    async with db_pool.acquire() as conn:
+    async with app.state.db_pool.acquire() as conn:
         row = await conn.fetchrow(
             """SELECT m.id, m.title, m.filename, m.date, m.transcript, m.summary, m.action_items,
                       m.todos, m.email_body, m.workspace_id, w.name AS workspace_name
@@ -3841,7 +3787,7 @@ async def create_workspace_todo(request: Request, workspace_id: int, body: Works
     status = _normalize_todo_status(body.status)
     due_date = _normalize_iso_due_date(body.due_date, datetime.now(timezone.utc)) if body.due_date else None
     due_date_param = _iso_date_param(due_date)
-    async with db_pool.acquire() as conn:
+    async with app.state.db_pool.acquire() as conn:
         row = await conn.fetchrow(
             """INSERT INTO workspace_todos (workspace_id, task, assignee, due_date, notes, status, source_type)
                VALUES ($1, $2, $3, $4, $5, $6, 'manual')
@@ -3866,7 +3812,7 @@ async def update_workspace_todo(request: Request, workspace_id: int, todo_id: st
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     if source != "manual":
         raise HTTPException(status_code=400, detail="Meeting-derived to-dos must be edited from the meeting to-do route")
-    async with db_pool.acquire() as conn:
+    async with app.state.db_pool.acquire() as conn:
         existing = await conn.fetchrow(
             """SELECT id, workspace_id, task, assignee, due_date, notes, status,
                       source_type, source_meeting_id, created_at, updated_at
@@ -3918,7 +3864,7 @@ async def delete_workspace_todo(request: Request, workspace_id: int, todo_id: st
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     if source != "manual":
         raise HTTPException(status_code=400, detail="Only manual to-dos can be deleted")
-    async with db_pool.acquire() as conn:
+    async with app.state.db_pool.acquire() as conn:
         result = await conn.execute(
             "DELETE FROM workspace_todos WHERE id = $1 AND workspace_id = $2",
             manual_id,
@@ -3962,7 +3908,7 @@ async def list_calendar_events(
 ):
     """List calendar events for a workspace, optionally filtered by date range."""
     await _ensure_user_workspace(request, workspace_id)
-    async with db_pool.acquire() as conn:
+    async with app.state.db_pool.acquire() as conn:
         if start and end:
             rows = await conn.fetch(
                 """SELECT id, workspace_id, title, all_day, is_due_only, start_time, end_time, notes, color, source_type, source_id, created_at, updated_at
@@ -4003,7 +3949,7 @@ async def create_calendar_event(request: Request, workspace_id: int, body: Calen
         raise HTTPException(status_code=400, detail="end_time must be after start_time")
     notes = (body.notes or "").strip()[:4000] or None
     color = (body.color or "").strip()[:20] or None
-    async with db_pool.acquire() as conn:
+    async with app.state.db_pool.acquire() as conn:
         row = await conn.fetchrow(
             """INSERT INTO calendar_events (workspace_id, title, all_day, is_due_only, start_time, end_time, notes, color)
                VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
@@ -4024,7 +3970,7 @@ async def create_calendar_event(request: Request, workspace_id: int, body: Calen
 async def get_calendar_event(request: Request, workspace_id: int, event_id: int):
     """Get a single calendar event."""
     await _ensure_user_workspace(request, workspace_id)
-    async with db_pool.acquire() as conn:
+    async with app.state.db_pool.acquire() as conn:
         row = await conn.fetchrow(
             """SELECT id, workspace_id, title, all_day, is_due_only, start_time, end_time, notes, color, created_at, updated_at
                FROM calendar_events
@@ -4041,7 +3987,7 @@ async def get_calendar_event(request: Request, workspace_id: int, event_id: int)
 async def update_calendar_event(request: Request, workspace_id: int, event_id: int, body: CalendarEventUpdateRequest):
     """Update a calendar event (drag-drop reschedule, edit details)."""
     await _ensure_user_workspace(request, workspace_id)
-    async with db_pool.acquire() as conn:
+    async with app.state.db_pool.acquire() as conn:
         existing = await conn.fetchrow(
             """SELECT id, workspace_id, title, all_day, is_due_only, start_time, end_time, notes, color, created_at, updated_at
                FROM calendar_events
@@ -4102,7 +4048,7 @@ async def update_calendar_event(request: Request, workspace_id: int, event_id: i
 async def delete_calendar_event(request: Request, workspace_id: int, event_id: int):
     """Delete a calendar event."""
     await _ensure_user_workspace(request, workspace_id)
-    async with db_pool.acquire() as conn:
+    async with app.state.db_pool.acquire() as conn:
         result = await conn.execute(
             "DELETE FROM calendar_events WHERE id = $1 AND workspace_id = $2",
             event_id,
@@ -4119,7 +4065,7 @@ async def list_all_calendar_events(request: Request, start: str | None = None, e
     user_id = getattr(request.state, "user_id", None)
     if not user_id:
         raise HTTPException(status_code=401, detail="Authentication required")
-    async with db_pool.acquire() as conn:
+    async with app.state.db_pool.acquire() as conn:
         # Get all workspace IDs the user owns or has been shared access to
         workspace_rows = await conn.fetch(
             """SELECT DISTINCT ws.id, ws.name
@@ -4173,7 +4119,7 @@ async def update_meeting_todo(meeting_id: int, todo_index: int, body: TodoUpdate
         todos[todo_index]["assignee"] = assignee[:160] if assignee else None
     if "status" in provided_fields:
         todos[todo_index]["status"] = _normalize_todo_status(body.status)
-    async with db_pool.acquire() as conn:
+    async with app.state.db_pool.acquire() as conn:
         await conn.execute(
             "UPDATE meetings SET todos = $1::jsonb WHERE id = $2",
             json.dumps(todos),
@@ -4530,7 +4476,7 @@ Only return valid JSON - no markdown, no code blocks."""
         task_id,
         GenerateTaskUpdateRequest(template_draft=updated_draft),
     )
-    async with db_pool.acquire() as conn:
+    async with app.state.db_pool.acquire() as conn:
         await conn.execute(
             "UPDATE generate_task_sessions SET template_chat_history = $1::jsonb, updated_at = NOW() WHERE id = $2",
             json.dumps(chat_history),
@@ -4701,7 +4647,7 @@ async def run_generate_task_question_research(
         yield json.dumps({"research_id": research_id, "status": f'Researching "{question.get("label") or question.get("key")}"...'}) + "\n"
         prior_research: list[dict[str, Any]] = []
         if prior_ids:
-            async with db_pool.acquire() as conn:
+            async with app.state.db_pool.acquire() as conn:
                 rows = await conn.fetch(
                     """
                     SELECT id, title, topic, mode, research_type, status, summary, content, refinement, source_research_ids,
@@ -4907,7 +4853,7 @@ async def run_question_chat(request: Request, workspace_id: int, task_id: int, b
         )
         prior_research: list[dict[str, Any]] = []
         if prior_ids:
-            async with db_pool.acquire() as conn:
+            async with app.state.db_pool.acquire() as conn:
                 rows = await conn.fetch(
                     "SELECT id, title, topic, mode, research_type, status, summary, content, refinement, "
                     "source_research_ids, source_document_refs, created_at, updated_at "
@@ -5205,7 +5151,7 @@ Base section structure on the research findings."""
                     template_draft=template_draft,
                 ),
             )
-            async with db_pool.acquire() as conn:
+            async with app.state.db_pool.acquire() as conn:
                 await conn.execute(
                     "UPDATE generate_task_sessions SET template_chat_history = $1::jsonb, updated_at = NOW() WHERE id = $2",
                     json.dumps(chat_history),
@@ -5583,7 +5529,7 @@ async def synthesize_and_send(sentence: str, ws: WebSocket):
 
     def _synth():
         pcm_chunks = []
-        for audio_chunk in piper_voice.synthesize(sentence):
+        for audio_chunk in app.state.piper_voice.synthesize(sentence):
             pcm_chunks.append((audio_chunk.audio_float_array * 32767).astype(np.int16).tobytes())
         return b"".join(pcm_chunks)
 
@@ -5859,7 +5805,7 @@ async def _load_meeting_todos_for_update(
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     owns_conn = conn is None
     if owns_conn:
-        conn = await db_pool.acquire()
+        conn = await app.state.db_pool.acquire()
     try:
         assert conn is not None
         row = await conn.fetchrow(
@@ -5917,7 +5863,7 @@ async def _set_workspace_todo_status(
     source, owner_id, todo_index = _parse_workspace_todo_id(todo_id)
     owns_conn = conn is None
     if owns_conn:
-        conn = await db_pool.acquire()
+        conn = await app.state.db_pool.acquire()
     if source == "manual":
         try:
             assert conn is not None
@@ -6020,7 +5966,7 @@ def _workspace_todo_sort_key(item: dict[str, Any]) -> tuple[Any, ...]:
 
 
 async def _list_workspace_todo_items(workspace_id: int) -> list[dict[str, Any]]:
-    async with db_pool.acquire() as conn:
+    async with app.state.db_pool.acquire() as conn:
         meeting_rows = await conn.fetch(
             """SELECT id, title, date, summary, action_items, todos
                FROM meetings
@@ -6098,7 +6044,7 @@ async def save_meeting(
     filename: str, transcript: str, analysis: dict, workspace_id: int | None = None,
     user_id: str | None = None, recorded_at: datetime | None = None,
 ) -> int:
-    async with db_pool.acquire() as conn:
+    async with app.state.db_pool.acquire() as conn:
         if recorded_at is not None:
             row = await conn.fetchrow(
                 """INSERT INTO meetings (title, filename, transcript, summary, action_items, todos, email_body, workspace_id, user_id, date)
@@ -6805,7 +6751,7 @@ async def _create_research_session(
     source_research_ids: list[int] | None = None,
     source_document_refs: list[dict[str, Any]] | None = None,
 ) -> int:
-    async with db_pool.acquire() as conn:
+    async with app.state.db_pool.acquire() as conn:
         row = await conn.fetchrow(
             """INSERT INTO research_sessions (
                     workspace_id, title, topic, mode, research_type, status, linked_todo_id, source_research_ids, source_document_refs
@@ -6840,7 +6786,7 @@ async def _update_research_session(
     source_research_ids: list[int] | None = None,
     source_document_refs: list[dict[str, Any]] | None = None,
 ) -> None:
-    async with db_pool.acquire() as conn:
+    async with app.state.db_pool.acquire() as conn:
         await conn.execute(
             """
             UPDATE research_sessions
@@ -6884,7 +6830,7 @@ async def _update_research_session(
 
 async def _replace_research_chunks(research_id: int) -> None:
     """Chunk and embed a completed research session."""
-    async with db_pool.acquire() as conn:
+    async with app.state.db_pool.acquire() as conn:
         row = await conn.fetchrow(
             "SELECT workspace_id, content FROM research_sessions WHERE id = $1",
             research_id,
@@ -6903,7 +6849,7 @@ async def _replace_research_chunks(research_id: int) -> None:
         logger.warning("Embedding generation failed for research %s: %s", research_id, exc)
         embeddings = [None] * len(chunks)
 
-    async with db_pool.acquire() as conn:
+    async with app.state.db_pool.acquire() as conn:
         async with conn.transaction():
             await conn.execute("DELETE FROM research_chunks WHERE research_id = $1", research_id)
             for chunk, emb in zip(chunks, embeddings):
@@ -7629,7 +7575,7 @@ def _serialize_chat_session(row: Any) -> dict[str, Any]:
 
 
 async def _list_workspace_chat_sessions(workspace_id: int) -> list[dict[str, Any]]:
-    async with db_pool.acquire() as conn:
+    async with app.state.db_pool.acquire() as conn:
         rows = await conn.fetch(
             """
             WITH session_ids AS (
@@ -7666,7 +7612,7 @@ async def _list_workspace_chat_sessions(workspace_id: int) -> list[dict[str, Any
 
 
 async def _get_workspace_chat_session(workspace_id: int, session_id: int) -> dict[str, Any]:
-    async with db_pool.acquire() as conn:
+    async with app.state.db_pool.acquire() as conn:
         row = await conn.fetchrow(
             """
             SELECT s.id, s.workspace_id, s.title, s.archived, s.created_at, s.updated_at,
@@ -7701,7 +7647,7 @@ async def _get_latest_workspace_chat_session(workspace_id: int) -> dict[str, Any
 
 async def _create_workspace_chat_session(workspace_id: int, title: str | None = None) -> dict[str, Any]:
     normalized_title = _normalize_chat_session_title(title)
-    async with db_pool.acquire() as conn:
+    async with app.state.db_pool.acquire() as conn:
         row = await conn.fetchrow(
             """
             INSERT INTO workspace_chat_sessions (workspace_id, title)
@@ -7719,7 +7665,7 @@ async def _create_workspace_chat_session(workspace_id: int, title: str | None = 
 
 async def _rename_workspace_chat_session(workspace_id: int, session_id: int, title: str) -> dict[str, Any]:
     normalized_title = _normalize_chat_session_title(title)
-    async with db_pool.acquire() as conn:
+    async with app.state.db_pool.acquire() as conn:
         row = await conn.fetchrow(
             """
             UPDATE workspace_chat_sessions
@@ -7765,7 +7711,7 @@ async def _update_workspace_chat_session(
         params.append(json.dumps(body.context_research_ids))
         idx += 1
 
-    async with db_pool.acquire() as conn:
+    async with app.state.db_pool.acquire() as conn:
         row = await conn.fetchrow(
             f"UPDATE workspace_chat_sessions SET {', '.join(sets)} "
             f"WHERE workspace_id = $1 AND id = $2 AND NOT archived "
@@ -7783,7 +7729,7 @@ async def _update_workspace_chat_session(
 
 
 async def _delete_workspace_chat_session(workspace_id: int, session_id: int) -> None:
-    async with db_pool.acquire() as conn:
+    async with app.state.db_pool.acquire() as conn:
         result = await conn.execute(
             """
             DELETE FROM workspace_chat_sessions
@@ -7797,7 +7743,7 @@ async def _delete_workspace_chat_session(workspace_id: int, session_id: int) -> 
 
 
 async def _delete_all_workspace_chat_sessions(workspace_id: int) -> None:
-    async with db_pool.acquire() as conn:
+    async with app.state.db_pool.acquire() as conn:
         await conn.execute(
             "DELETE FROM workspace_chat_sessions WHERE workspace_id = $1",
             workspace_id,
@@ -7805,7 +7751,7 @@ async def _delete_all_workspace_chat_sessions(workspace_id: int) -> None:
 
 
 async def _list_chat_session_messages(workspace_id: int, session_id: int) -> list[dict[str, Any]]:
-    async with db_pool.acquire() as conn:
+    async with app.state.db_pool.acquire() as conn:
         rows = await conn.fetch(
             """
             SELECT id, workspace_id, chat_session_id, role, content, attachment_ids, created_at
@@ -7823,7 +7769,7 @@ async def _append_chat_session_message(
     workspace_id: int, session_id: int, role: str, content: str,
     attachment_ids: list[dict] | None = None,
 ) -> dict[str, Any]:
-    async with db_pool.acquire() as conn:
+    async with app.state.db_pool.acquire() as conn:
         async with conn.transaction():
             session_row = await conn.fetchrow(
                 """
@@ -7878,7 +7824,7 @@ async def _suggest_related_research_sessions(
     *,
     exclude_research_id: int | None = None,
 ) -> list[dict[str, Any]]:
-    async with db_pool.acquire() as conn:
+    async with app.state.db_pool.acquire() as conn:
         rows = await conn.fetch(
             """
             SELECT rs.id, rs.title, rs.topic, rs.mode, rs.research_type, rs.status, rs.summary,
@@ -8312,7 +8258,7 @@ async def _fetch_generate_task_rows(
 ) -> tuple[Any, Any | None, int]:
     owns_conn = conn is None
     if owns_conn:
-        conn = await db_pool.acquire()
+        conn = await app.state.db_pool.acquire()
     try:
         assert conn is not None
         task_row = await conn.fetchrow(
@@ -8366,7 +8312,7 @@ async def _fetch_generate_task_run_row(
 ) -> Any:
     owns_conn = conn is None
     if owns_conn:
-        conn = await db_pool.acquire()
+        conn = await app.state.db_pool.acquire()
     try:
         assert conn is not None
         run_row = await conn.fetchrow(
@@ -8390,7 +8336,7 @@ async def _sync_generate_task_snapshot_from_run(
 ) -> None:
     owns_conn = conn is None
     if owns_conn:
-        conn = await db_pool.acquire()
+        conn = await app.state.db_pool.acquire()
     try:
         assert conn is not None
         if run_row is None:
@@ -8474,7 +8420,7 @@ async def _clone_generate_run_research_session(
 ) -> int:
     if not source_research_id:
         return await _ensure_task_linked_research_session(workspace_id, todo, related_research_ids)
-    async with db_pool.acquire() as conn:
+    async with app.state.db_pool.acquire() as conn:
         source_row = await conn.fetchrow(
             """
             SELECT id, title, topic, mode, research_type, status, summary, content, sources,
@@ -8570,7 +8516,7 @@ async def _create_generate_task_run(
         answer_meta = {}
         current_step = "setup"
     initial_title = (seed.get("title") or f'{config["label"]}: {todo["task"][:80]}').strip()
-    async with db_pool.acquire() as conn:
+    async with app.state.db_pool.acquire() as conn:
         next_run_number = int(await conn.fetchval(
             "SELECT COALESCE(MAX(run_number), 0) + 1 FROM generate_task_runs WHERE task_id = $1",
             task_data["id"],
@@ -8685,7 +8631,7 @@ async def _build_generate_task_payload(
     todo = await _get_workspace_todo_item_by_id(workspace_id, data["todo_id"])
     linked_research = None
     if data.get("linked_research_id"):
-        async with db_pool.acquire() as conn:
+        async with app.state.db_pool.acquire() as conn:
             research_row = await conn.fetchrow(
                 """
                 SELECT rs.id, rs.title, rs.topic, rs.mode, rs.research_type, rs.status, rs.summary, rs.content,
@@ -8710,7 +8656,7 @@ async def _build_generate_task_payload(
         todo["task"],
         exclude_research_id=data.get("linked_research_id"),
     )
-    async with db_pool.acquire() as conn:
+    async with app.state.db_pool.acquire() as conn:
         run_rows = await conn.fetch(
             """
             SELECT id, run_number, title, status, current_step, is_stale, latest_document_id, created_at, updated_at
@@ -8753,7 +8699,7 @@ async def _get_generate_task_session(
 
 
 async def _list_generate_task_sessions(workspace_id: int) -> list[dict[str, Any]]:
-    async with db_pool.acquire() as conn:
+    async with app.state.db_pool.acquire() as conn:
         rows = await conn.fetch(
             """
             SELECT gts.id, gts.workspace_id, gts.todo_id, gts.title, gts.artifact_template, gts.output_type,
@@ -8827,7 +8773,7 @@ async def _create_or_get_generate_task_session(
     initial_output = (output_type or config.get("default_output") or "pdf").strip().lower()
     initial_seed = _build_generate_task_initial_seed(todo, artifact_template, initial_output, related_ids)
     initial_title = initial_seed["title"]
-    async with db_pool.acquire() as conn:
+    async with app.state.db_pool.acquire() as conn:
         task_row = await conn.fetchrow(
             "SELECT * FROM generate_task_sessions WHERE workspace_id = $1 AND todo_id = $2",
             workspace_id,
@@ -8838,7 +8784,7 @@ async def _create_or_get_generate_task_session(
             await _set_workspace_todo_status(workspace_id, todo_id, "in_progress")
         return await _get_generate_task_session(workspace_id, task_row["id"])
 
-    async with db_pool.acquire() as conn:
+    async with app.state.db_pool.acquire() as conn:
         task_row = await conn.fetchrow(
             """
             INSERT INTO generate_task_sessions (
@@ -8886,7 +8832,7 @@ async def _reset_generate_task_step(workspace_id: int, task_id: int, step: str) 
     if not active_run_row:
         raise ValueError("No active run")
     run_id = active_run_row["id"]
-    async with db_pool.acquire() as conn:
+    async with app.state.db_pool.acquire() as conn:
         if step == "research":
             await conn.execute(
                 """UPDATE generate_task_runs
@@ -8985,7 +8931,7 @@ async def _delete_task_owned_research_if_unreferenced(
 async def _delete_generate_task_run(workspace_id: int, task_id: int, run_id: int) -> dict[str, Any]:
     deleted_task = False
     todo_id: str | None = None
-    async with db_pool.acquire() as conn:
+    async with app.state.db_pool.acquire() as conn:
         async with conn.transaction():
             task_row, _, run_count = await _fetch_generate_task_rows(workspace_id, task_id, conn=conn)
             target_run_row = await _fetch_generate_task_run_row(task_id, run_id, conn=conn)
@@ -9048,7 +8994,7 @@ async def _delete_generate_task_run(workspace_id: int, task_id: int, run_id: int
 
 async def _delete_generate_task_session(workspace_id: int, task_id: int) -> dict[str, Any]:
     """Delete an entire generate task session including all runs and associated research."""
-    async with db_pool.acquire() as conn:
+    async with app.state.db_pool.acquire() as conn:
         async with conn.transaction():
             task_row = await conn.fetchrow(
                 "SELECT * FROM generate_task_sessions WHERE workspace_id = $1 AND id = $2",
@@ -9095,7 +9041,7 @@ async def _update_generate_task_session_row(
     if not active_run_row:
         raise HTTPException(status_code=404, detail="Active generate run not found")
     if updates.active_run_id is not None and int(updates.active_run_id) != int(active_run_row["id"]):
-        async with db_pool.acquire() as conn:
+        async with app.state.db_pool.acquire() as conn:
             target_run_row = await conn.fetchrow(
                 "SELECT * FROM generate_task_runs WHERE task_id = $1 AND id = $2",
                 task_id,
@@ -9242,7 +9188,7 @@ async def _update_generate_task_session_row(
             stale_flags = _normalize_generate_stale_flags(updates.stale_flags)
     if not is_stale:
         stale_flags = []
-    async with db_pool.acquire() as conn:
+    async with app.state.db_pool.acquire() as conn:
         run_row = await conn.fetchrow(
             """
             UPDATE generate_task_runs
@@ -9456,7 +9402,7 @@ def _split_document_into_chunks(text: str | None) -> list[dict[str, Any]]:
 async def _replace_document_chunks(document_id: int, workspace_id: int, extracted_text: str | None) -> None:
     chunks = _split_document_into_chunks(extracted_text)
     if not chunks:
-        async with db_pool.acquire() as conn:
+        async with app.state.db_pool.acquire() as conn:
             await conn.execute("DELETE FROM document_chunks WHERE document_id = $1", document_id)
         return
 
@@ -9468,7 +9414,7 @@ async def _replace_document_chunks(document_id: int, workspace_id: int, extracte
         logger.warning("Embedding generation failed for document %s: %s", document_id, exc)
         embeddings = [None] * len(chunks)
 
-    async with db_pool.acquire() as conn:
+    async with app.state.db_pool.acquire() as conn:
         async with conn.transaction():
             await conn.execute("DELETE FROM document_chunks WHERE document_id = $1", document_id)
             for chunk, emb in zip(chunks, embeddings):
@@ -9501,7 +9447,7 @@ async def _ensure_document_chunks(workspace_id: int, document_ids: list[int]) ->
     target_ids = [int(item) for item in document_ids if item]
     if not target_ids:
         return
-    async with db_pool.acquire() as conn:
+    async with app.state.db_pool.acquire() as conn:
         rows = await conn.fetch(
             """
             SELECT d.id, d.extracted_text
@@ -9531,7 +9477,7 @@ async def _ensure_document_chunks(workspace_id: int, document_ids: list[int]) ->
 async def _replace_meeting_chunks(meeting_id: int, workspace_id: int, transcript: str | None) -> None:
     chunks = _split_document_into_chunks(transcript)
     if not chunks:
-        async with db_pool.acquire() as conn:
+        async with app.state.db_pool.acquire() as conn:
             await conn.execute("DELETE FROM meeting_chunks WHERE meeting_id = $1", meeting_id)
         return
 
@@ -9543,7 +9489,7 @@ async def _replace_meeting_chunks(meeting_id: int, workspace_id: int, transcript
         logger.warning("Embedding generation failed for meeting %s: %s", meeting_id, exc)
         embeddings = [None] * len(chunks)
 
-    async with db_pool.acquire() as conn:
+    async with app.state.db_pool.acquire() as conn:
         async with conn.transaction():
             await conn.execute("DELETE FROM meeting_chunks WHERE meeting_id = $1", meeting_id)
             for chunk, emb in zip(chunks, embeddings):
@@ -9576,7 +9522,7 @@ async def _ensure_meeting_chunks(workspace_id: int, meeting_ids: list[int]) -> N
     target_ids = [int(item) for item in meeting_ids if item]
     if not target_ids:
         return
-    async with db_pool.acquire() as conn:
+    async with app.state.db_pool.acquire() as conn:
         rows = await conn.fetch(
             """
             SELECT m.id, m.transcript, m.workspace_id
@@ -9612,7 +9558,7 @@ async def _retrieve_meeting_evidence(
         return []
     await _ensure_meeting_chunks(workspace_id, mid_list)
     search_query = _document_query_text(query_text)
-    async with db_pool.acquire() as conn:
+    async with app.state.db_pool.acquire() as conn:
         rows: list[Any] = []
         # Try vector similarity search first (RAG)
         has_embeddings = await conn.fetchval(
@@ -9715,7 +9661,7 @@ async def _retrieve_meeting_evidence(
 
 async def _backfill_meeting_chunks() -> None:
     """Chunk all existing meetings that have transcripts but no chunks yet."""
-    async with db_pool.acquire() as conn:
+    async with app.state.db_pool.acquire() as conn:
         rows = await conn.fetch(
             """
             SELECT m.id, m.workspace_id, m.transcript
@@ -9743,7 +9689,7 @@ async def _upload_job_worker() -> None:
     logger.info("Upload job worker started")
     while True:
         try:
-            async with db_pool.acquire() as conn:
+            async with app.state.db_pool.acquire() as conn:
                 job = await conn.fetchrow(
                     """
                     UPDATE upload_jobs
@@ -9771,7 +9717,7 @@ async def _upload_job_worker() -> None:
             logger.info("Job %d: processing %s", job_id, filename)
 
             async def _set_status(status: str, error: str | None = None, meeting_id: int | None = None):
-                async with db_pool.acquire() as _conn:
+                async with app.state.db_pool.acquire() as _conn:
                     await _conn.execute(
                         "UPDATE upload_jobs SET status=$1, error=$2, meeting_id=$3, updated_at=NOW() WHERE id=$4",
                         status, error, meeting_id, job_id,
@@ -9911,7 +9857,7 @@ async def _backfill_document_processing() -> None:
     - Case 1: extraction never completed (file in MinIO but no extracted_text)
     """
     # --- Case 2: extracted but not chunked ---
-    async with db_pool.acquire() as conn:
+    async with app.state.db_pool.acquire() as conn:
         unchunked = await conn.fetch(
             """
             SELECT d.id, d.workspace_id, d.extracted_text
@@ -9931,7 +9877,7 @@ async def _backfill_document_processing() -> None:
                 logger.warning("Document chunk backfill failed for doc %s: %s", row["id"], exc)
 
     # --- Case 3: chunked but not analyzed ---
-    async with db_pool.acquire() as conn:
+    async with app.state.db_pool.acquire() as conn:
         unanalyzed = await conn.fetch(
             """
             SELECT d.id, d.workspace_id, d.extracted_text
@@ -9953,7 +9899,7 @@ async def _backfill_document_processing() -> None:
                 logger.warning("Document analysis backfill failed for doc %s: %s", row["id"], exc)
 
     # --- Case 1: extraction never completed (uploaded docs with MinIO object) ---
-    async with db_pool.acquire() as conn:
+    async with app.state.db_pool.acquire() as conn:
         unextracted = await conn.fetch(
             """
             SELECT d.id, d.workspace_id, d.object_key, d.mime_type, d.filename
@@ -9976,7 +9922,7 @@ async def _backfill_document_processing() -> None:
                 logger.warning("Document extraction backfill failed for doc %s: %s", row["id"], exc)
 
     # Warn about Drive docs that can't be re-extracted without OAuth token
-    async with db_pool.acquire() as conn:
+    async with app.state.db_pool.acquire() as conn:
         drive_stuck = await conn.fetchval(
             """
             SELECT count(*) FROM documents
@@ -9999,7 +9945,7 @@ async def _run_office_ocr_backfill() -> None:
     """One-time backfill: generate missing PDF previews and re-extract PPTX text with OCR."""
     pptx_mime = "application/vnd.openxmlformats-officedocument.presentationml.presentation"
     office_mimes = tuple(_OFFICE_MIMES)
-    async with db_pool.acquire() as conn:
+    async with app.state.db_pool.acquire() as conn:
         docs = await conn.fetch(
             """
             SELECT id, workspace_id, object_key, mime_type, filename, preview_pdf_key
@@ -10037,7 +9983,7 @@ async def _run_office_ocr_backfill() -> None:
                             Bucket=MINIO_BUCKET, Key=pdf_key,
                             Body=lin_pdf, ContentType="application/pdf",
                         )
-                    async with db_pool.acquire() as conn:
+                    async with app.state.db_pool.acquire() as conn:
                         await conn.execute(
                             "UPDATE documents SET preview_pdf_key = $1 WHERE id = $2",
                             pdf_key, doc_id,
@@ -10058,7 +10004,7 @@ async def _run_office_ocr_backfill() -> None:
                 if extracted:
                     extracted = extracted.replace("\x00", "")
                 tables = await asyncio.to_thread(_extract_tables_sync, data, row["mime_type"], row["filename"])
-                async with db_pool.acquire() as conn:
+                async with app.state.db_pool.acquire() as conn:
                     await conn.execute(
                         "UPDATE documents SET extracted_text = $1, tables_json = $2::jsonb WHERE id = $3",
                         extracted, json.dumps(tables), doc_id,
@@ -10141,7 +10087,7 @@ async def _retrieve_document_evidence(
         return []
     await _ensure_document_chunks(workspace_id, doc_ids)
     search_query = _document_query_text(query_text)
-    async with db_pool.acquire() as conn:
+    async with app.state.db_pool.acquire() as conn:
         rows: list[Any] = []
         # Try vector similarity search first (RAG)
         has_embeddings = await conn.fetchval(
@@ -10329,7 +10275,7 @@ async def _build_generate_question_context(workspace_id: int, session: dict[str,
             + (session.get("selected_research_ids") or [])
         )
     )
-    async with db_pool.acquire() as conn:
+    async with app.state.db_pool.acquire() as conn:
         if session["selected_document_ids"]:
             rows = await conn.fetch(
                 "SELECT filename, mime_type, executive_summary, key_takeaways, extracted_text FROM documents WHERE id = ANY($1::int[])",
@@ -11340,7 +11286,7 @@ async def _generate_task_answer_autofill(
             question_research_ids.append(research_id)
     question_research_rows: dict[int, dict[str, Any]] = {}
     if question_research_ids:
-        async with db_pool.acquire() as conn:
+        async with app.state.db_pool.acquire() as conn:
             rows = await conn.fetch(
                 """
                 SELECT id, title, summary, content, sources, created_at, updated_at
@@ -11998,7 +11944,7 @@ async def analyze_async(
     original_filename = file.filename
     logger.info("Async upload queued: %s (%.1f MB), workspace=%s", original_filename, len(contents)/1024/1024, workspace_id)
 
-    async with db_pool.acquire() as conn:
+    async with app.state.db_pool.acquire() as conn:
         # Insert a placeholder job row to get the ID first
         row = await conn.fetchrow(
             """
@@ -12021,7 +11967,7 @@ async def analyze_async(
 
     # File is safely in MinIO — only now mark the job as queued so the worker
     # cannot pick it up before the file exists (race condition prevention).
-    async with db_pool.acquire() as conn:
+    async with app.state.db_pool.acquire() as conn:
         await conn.execute(
             "UPDATE upload_jobs SET status='queued', updated_at=NOW() WHERE id=$1",
             job_id,
@@ -12034,7 +11980,7 @@ async def analyze_async(
 @app.get("/jobs/{job_id}")
 async def get_job_status(job_id: int, request: Request):
     """Poll the status of a background upload job."""
-    async with db_pool.acquire() as conn:
+    async with app.state.db_pool.acquire() as conn:
         row = await conn.fetchrow(
             "SELECT id, workspace_id, filename, status, error, meeting_id, created_at, updated_at FROM upload_jobs WHERE id=$1",
             job_id,
@@ -12313,7 +12259,7 @@ async def _store_document_analysis(
     summary_payload: dict[str, Any],
     meta: dict[str, Any],
 ) -> None:
-    async with db_pool.acquire() as conn:
+    async with app.state.db_pool.acquire() as conn:
         await conn.execute(
             """UPDATE documents
                SET executive_summary = $1,
@@ -12473,7 +12419,7 @@ async def _extract_and_store(doc_id: int, workspace_id: int, data: bytes, mime_t
                 lin_data = await asyncio.to_thread(_linearize_pdf_sync, data)
                 if lin_data and len(lin_data) > 0:
                     # Fetch the object_key stored during upload and replace with linearized copy
-                    async with db_pool.acquire() as conn:
+                    async with app.state.db_pool.acquire() as conn:
                         key_row = await conn.fetchrow("SELECT object_key FROM documents WHERE id = $1", doc_id)
                     if key_row and key_row["object_key"]:
                         async with _get_minio_client() as client:
@@ -12501,7 +12447,7 @@ async def _extract_and_store(doc_id: int, workspace_id: int, data: bytes, mime_t
                             Bucket=MINIO_BUCKET, Key=pdf_key,
                             Body=lin_pdf, ContentType="application/pdf",
                         )
-                    async with db_pool.acquire() as conn:
+                    async with app.state.db_pool.acquire() as conn:
                         await conn.execute(
                             "UPDATE documents SET preview_pdf_key = $1 WHERE id = $2",
                             pdf_key, doc_id,
@@ -12521,7 +12467,7 @@ async def _extract_and_store(doc_id: int, workspace_id: int, data: bytes, mime_t
             tables = await asyncio.to_thread(_extract_tables_sync, data, mime_type, filename)
         if extracted:
             extracted = extracted.replace("\x00", "")
-        async with db_pool.acquire() as conn:
+        async with app.state.db_pool.acquire() as conn:
             await conn.execute(
                 "UPDATE documents SET extracted_text = $1, tables_json = $2::jsonb WHERE id = $3",
                 extracted,
@@ -12556,9 +12502,9 @@ def _content_disposition(disposition: str, filename: str) -> str:
 
 
 def _get_minio_client():
-    if minio_client is None:
+    if app.state.minio_client is None:
         raise HTTPException(status_code=503, detail="Document storage not available.")
-    return minio_client.create_client(
+    return app.state.minio_client.create_client(
         "s3",
         endpoint_url=f"http://{MINIO_ENDPOINT}",
         aws_access_key_id=MINIO_ACCESS_KEY,
@@ -12582,7 +12528,7 @@ async def _store_generated_document(
             Body=data,
             ContentType=mime_type,
         )
-    async with db_pool.acquire() as conn:
+    async with app.state.db_pool.acquire() as conn:
         row = await conn.fetchrow(
             """INSERT INTO documents (
                    workspace_id, filename, object_key, file_size, mime_type, extracted_text,
@@ -12627,7 +12573,7 @@ async def upload_document(
             ContentType=mime_type,
         )
 
-    async with db_pool.acquire() as conn:
+    async with app.state.db_pool.acquire() as conn:
         row = await conn.fetchrow(
             """INSERT INTO documents (workspace_id, filename, object_key, file_size, mime_type)
                VALUES ($1, $2, $3, $4, $5)
@@ -12645,7 +12591,7 @@ async def upload_document(
 @app.get("/workspaces/{workspace_id}/documents")
 async def list_documents(request: Request, workspace_id: int):
     await _ensure_user_workspace(request, workspace_id)
-    async with db_pool.acquire() as conn:
+    async with app.state.db_pool.acquire() as conn:
         rows = await conn.fetch(
             """SELECT d.id, d.filename, d.file_size, d.mime_type, d.uploaded_at, d.extracted_text,
                       d.executive_summary, d.key_takeaways, d.analyzed_at,
@@ -12663,7 +12609,7 @@ async def list_documents(request: Request, workspace_id: int):
 @app.get("/workspaces/{workspace_id}/documents/{doc_id}")
 async def get_document_detail(request: Request, workspace_id: int, doc_id: int):
     await _ensure_user_workspace(request, workspace_id)
-    async with db_pool.acquire() as conn:
+    async with app.state.db_pool.acquire() as conn:
         row = await conn.fetchrow(
             """SELECT id, filename, file_size, mime_type, uploaded_at, extracted_text,
                       executive_summary, key_takeaways, analyzed_at, analysis_provider, analysis_model,
@@ -12681,7 +12627,7 @@ async def get_document_detail(request: Request, workspace_id: int, doc_id: int):
 @app.get("/workspaces/{workspace_id}/documents/{doc_id}/download")
 async def download_document(request: Request, workspace_id: int, doc_id: int):
     await _ensure_user_workspace(request, workspace_id)
-    async with db_pool.acquire() as conn:
+    async with app.state.db_pool.acquire() as conn:
         row = await conn.fetchrow(
             "SELECT filename, object_key, mime_type FROM documents WHERE id = $1 AND workspace_id = $2",
             doc_id, workspace_id,
@@ -12709,7 +12655,7 @@ async def document_raw(doc_id: int, request: Request):
     dramatically improves PDF load time and page-navigation responsiveness.
     No workspace auth (needed for Google Docs Viewer / inline iframe).
     """
-    async with db_pool.acquire() as conn:
+    async with app.state.db_pool.acquire() as conn:
         row = await conn.fetchrow(
             "SELECT filename, object_key, mime_type, drive_file_id FROM documents WHERE id = $1",
             doc_id,
@@ -12773,7 +12719,7 @@ async def document_raw(doc_id: int, request: Request):
 @app.get("/documents/{doc_id}/preview")
 async def document_preview_pdf(doc_id: int, request: Request):
     """Serve the generated PDF preview inline with HTTP range request support."""
-    async with db_pool.acquire() as conn:
+    async with app.state.db_pool.acquire() as conn:
         row = await conn.fetchrow(
             "SELECT preview_pdf_key FROM documents WHERE id = $1", doc_id,
         )
@@ -12834,7 +12780,7 @@ async def document_preview_pdf(doc_id: int, request: Request):
 @app.delete("/workspaces/{workspace_id}/documents/{doc_id}")
 async def delete_document(request: Request, workspace_id: int, doc_id: int):
     await _ensure_user_workspace(request, workspace_id)
-    async with db_pool.acquire() as conn:
+    async with app.state.db_pool.acquire() as conn:
         row = await conn.fetchrow(
             "SELECT object_key, preview_pdf_key FROM documents WHERE id = $1 AND workspace_id = $2",
             doc_id, workspace_id,
@@ -12854,7 +12800,7 @@ async def delete_document(request: Request, workspace_id: int, doc_id: int):
     except Exception as e:
         logger.warning("MinIO unavailable, skipping object cleanup for doc %s: %s", doc_id, e)
 
-    async with db_pool.acquire() as conn:
+    async with app.state.db_pool.acquire() as conn:
         await conn.execute("DELETE FROM documents WHERE id = $1", doc_id)
 
     return {"ok": True}
@@ -12863,7 +12809,7 @@ async def delete_document(request: Request, workspace_id: int, doc_id: int):
 @app.get("/workspaces/{workspace_id}/documents/{doc_id}/text")
 async def get_document_text(request: Request, workspace_id: int, doc_id: int):
     await _ensure_user_workspace(request, workspace_id)
-    async with db_pool.acquire() as conn:
+    async with app.state.db_pool.acquire() as conn:
         row = await conn.fetchrow(
             "SELECT filename, extracted_text FROM documents WHERE id = $1 AND workspace_id = $2",
             doc_id, workspace_id,
@@ -12876,7 +12822,7 @@ async def get_document_text(request: Request, workspace_id: int, doc_id: int):
 @app.post("/workspaces/{workspace_id}/documents/{doc_id}/analyze")
 async def analyze_document_summary(request: Request, workspace_id: int, doc_id: int):
     await _ensure_user_workspace(request, workspace_id)
-    async with db_pool.acquire() as conn:
+    async with app.state.db_pool.acquire() as conn:
         row = await conn.fetchrow(
             """SELECT extracted_text
                FROM documents
@@ -12902,7 +12848,7 @@ async def rotate_document_pages(request: Request, workspace_id: int, doc_id: int
     await _ensure_user_workspace(request, workspace_id)
     if body.degrees not in (90, 180, 270):
         raise HTTPException(status_code=400, detail="degrees must be 90, 180, or 270")
-    async with db_pool.acquire() as conn:
+    async with app.state.db_pool.acquire() as conn:
         row = await conn.fetchrow(
             "SELECT object_key, mime_type, filename, preview_pdf_key FROM documents WHERE id = $1 AND workspace_id = $2",
             doc_id, workspace_id,
@@ -12942,7 +12888,7 @@ async def rotate_document_pages(request: Request, workspace_id: int, doc_id: int
 @app.get("/workspaces/{workspace_id}/research")
 async def list_research_sessions(request: Request, workspace_id: int):
     await _ensure_user_workspace(request, workspace_id)
-    async with db_pool.acquire() as conn:
+    async with app.state.db_pool.acquire() as conn:
         rows = await conn.fetch(
             """SELECT rs.id, rs.title, rs.topic, rs.mode, rs.research_type, rs.status, rs.summary, rs.linked_todo_id,
                       rs.source_research_ids, rs.source_document_refs, rs.refinement, rs.created_at, rs.updated_at,
@@ -12965,7 +12911,7 @@ async def list_research_sessions(request: Request, workspace_id: int):
 @app.get("/workspaces/{workspace_id}/research/{research_id}")
 async def get_research_session(request: Request, workspace_id: int, research_id: int):
     await _ensure_user_workspace(request, workspace_id)
-    async with db_pool.acquire() as conn:
+    async with app.state.db_pool.acquire() as conn:
         row = await conn.fetchrow(
             """SELECT rs.id, rs.title, rs.topic, rs.mode, rs.research_type, rs.status, rs.summary, rs.content,
                       rs.sources, rs.llm_provider, rs.llm_model, rs.error, rs.refinement, rs.linked_todo_id,
@@ -12991,7 +12937,7 @@ async def get_research_session(request: Request, workspace_id: int, research_id:
 @app.delete("/workspaces/{workspace_id}/research/{research_id}")
 async def delete_research_session(request: Request, workspace_id: int, research_id: int):
     await _ensure_user_workspace(request, workspace_id)
-    async with db_pool.acquire() as conn:
+    async with app.state.db_pool.acquire() as conn:
         result = await conn.execute(
             "DELETE FROM research_sessions WHERE workspace_id = $1 AND id = $2",
             workspace_id, research_id,
@@ -13007,7 +12953,7 @@ async def batch_delete_research_sessions(request: Request, workspace_id: int, bo
     ids = body.get("ids", [])
     if not ids:
         raise HTTPException(status_code=400, detail="No session IDs provided")
-    async with db_pool.acquire() as conn:
+    async with app.state.db_pool.acquire() as conn:
         result = await conn.execute(
             "DELETE FROM research_sessions WHERE workspace_id = $1 AND id = ANY($2::int[])",
             workspace_id, ids,
@@ -13029,7 +12975,7 @@ async def refine_research_question(request: Request, workspace_id: int, body: Re
     all_source_ids = list(body.document_ids) + list(body.meeting_ids)
     if body.document_ids:
         try:
-            async with db_pool.acquire() as conn:
+            async with app.state.db_pool.acquire() as conn:
                 doc_rows = await conn.fetch(
                     "SELECT id, filename, executive_summary FROM documents WHERE workspace_id = $1 AND id = ANY($2::int[])",
                     workspace_id, [int(d) for d in body.document_ids],
@@ -13040,7 +12986,7 @@ async def refine_research_question(request: Request, workspace_id: int, body: Re
             pass
     if body.meeting_ids:
         try:
-            async with db_pool.acquire() as conn:
+            async with app.state.db_pool.acquire() as conn:
                 mtg_rows = await conn.fetch(
                     "SELECT id, title, summary FROM meetings WHERE workspace_id = $1 AND id = ANY($2::int[])",
                     workspace_id, [int(m) for m in body.meeting_ids],
@@ -13264,7 +13210,7 @@ async def _build_generation_context(
     parts = []
 
     if meeting_ids:
-        async with db_pool.acquire() as conn:
+        async with app.state.db_pool.acquire() as conn:
             rows = await conn.fetch(
                 "SELECT id, title, date, summary, action_items, transcript FROM meetings WHERE id = ANY($1::int[])",
                 meeting_ids,
@@ -13293,7 +13239,7 @@ async def _build_generation_context(
             parts.append("### Meetings\n\n" + "\n\n".join(meeting_parts))
 
     if include_document_ids:
-        async with db_pool.acquire() as conn:
+        async with app.state.db_pool.acquire() as conn:
             rows = await conn.fetch(
                 "SELECT filename, mime_type, executive_summary, extracted_text FROM documents WHERE id = ANY($1::int[])",
                 include_document_ids,
@@ -13323,7 +13269,7 @@ async def _build_generation_context(
             parts.append("### Documents\n\n" + "\n\n".join(doc_parts))
 
     if include_research_ids:
-        async with db_pool.acquire() as conn:
+        async with app.state.db_pool.acquire() as conn:
             rows = await conn.fetch(
                 """SELECT title, topic, mode, research_type, summary, content
                    FROM research_sessions
@@ -13748,7 +13694,7 @@ async def _retrieve_research_evidence(
     rid_list = [int(item) for item in research_ids if item]
     if not rid_list:
         return []
-    async with db_pool.acquire() as conn:
+    async with app.state.db_pool.acquire() as conn:
         rows: list[Any] = []
         # Try vector similarity first
         has_embeddings = await conn.fetchval(
@@ -13836,7 +13782,7 @@ async def _build_chat_system_prompt(
     meeting_parts = []
 
     if meeting_ids:
-        async with db_pool.acquire() as conn:
+        async with app.state.db_pool.acquire() as conn:
             rows = await conn.fetch(
                 "SELECT id, title, date, summary, action_items FROM meetings WHERE id = ANY($1::int[])",
                 meeting_ids,
@@ -13859,7 +13805,7 @@ async def _build_chat_system_prompt(
 
     doc_parts = []
     if include_document_ids:
-        async with db_pool.acquire() as conn:
+        async with app.state.db_pool.acquire() as conn:
             doc_rows = await conn.fetch(
                 "SELECT id, filename, executive_summary FROM documents WHERE id = ANY($1::int[])",
                 include_document_ids,
@@ -13870,7 +13816,7 @@ async def _build_chat_system_prompt(
 
     research_parts = []
     if include_research_ids:
-        async with db_pool.acquire() as conn:
+        async with app.state.db_pool.acquire() as conn:
             research_rows = await conn.fetch(
                 """SELECT id, title, topic, mode, research_type, summary
                    FROM research_sessions
@@ -13935,7 +13881,7 @@ def _fts_extract_passages(text: str, query: str, max_passages: int = 3, window: 
 
 async def _build_chat_attachment_context(workspace_id: int, chat_session_id: int) -> str:
     """Return a one-line stub listing activated attached documents. Full content retrieved per-turn via FTS."""
-    async with db_pool.acquire() as conn:
+    async with app.state.db_pool.acquire() as conn:
         rows = await conn.fetch(
             """SELECT filename FROM chat_session_attachments
                WHERE workspace_id = $1 AND chat_session_id = $2
@@ -13954,7 +13900,7 @@ async def _build_chat_attachment_context(workspace_id: int, chat_session_id: int
 
 async def _retrieve_attachment_context_for_turn(workspace_id: int, chat_session_id: int, query: str) -> str:
     """Per-turn: inject full text for small docs (≤3000 chars), FTS excerpts for larger docs."""
-    async with db_pool.acquire() as conn:
+    async with app.state.db_pool.acquire() as conn:
         rows = await conn.fetch(
             """SELECT filename, extracted_text, status FROM chat_session_attachments
                WHERE workspace_id = $1 AND chat_session_id = $2
@@ -14151,7 +14097,7 @@ def _normalize_chat_turn_messages(
 
 
 async def _llm_runner_proxy_get(path: str) -> Any:
-    return await llm_runner_service.get_json(path, timeout=30.0)
+    return await app.state.llm_runner_service.get_json(path, timeout=30.0)
 
 
 def _chat_turn_generic_system_prompt() -> str:
@@ -14181,7 +14127,7 @@ async def proxy_chat_turn(request: Request, body: ChatTurnProxyRequest):
     if body.workspace_id is not None and body.attachment_ids:
         att_ids = [int(a["id"]) for a in body.attachment_ids if a.get("id") is not None]
         if att_ids:
-            async with db_pool.acquire() as conn:
+            async with app.state.db_pool.acquire() as conn:
                 await conn.execute(
                     "UPDATE chat_session_attachments SET activated = TRUE WHERE id = ANY($1::int[]) AND workspace_id = $2",
                     att_ids, body.workspace_id,
@@ -14285,7 +14231,7 @@ async def proxy_chat_turn_stream(body: ChatTurnProxyRequest, request: Request):
     if body.workspace_id is not None and body.attachment_ids:
         att_ids = [int(a["id"]) for a in body.attachment_ids if a.get("id") is not None]
         if att_ids:
-            async with db_pool.acquire() as conn:
+            async with app.state.db_pool.acquire() as conn:
                 await conn.execute(
                     "UPDATE chat_session_attachments SET activated = TRUE WHERE id = ANY($1::int[]) AND workspace_id = $2",
                     att_ids, body.workspace_id,
@@ -14423,7 +14369,7 @@ async def delete_workspace_chat_session(request: Request, workspace_id: int, ses
 @app.get("/workspaces/{workspace_id}/chat/sessions/{session_id}/attachments")
 async def list_chat_attachments(request: Request, workspace_id: int, session_id: int):
     await _ensure_user_workspace(request, workspace_id)
-    async with db_pool.acquire() as conn:
+    async with app.state.db_pool.acquire() as conn:
         rows = await conn.fetch(
             """SELECT id, workspace_id, chat_session_id, filename, mime_type, file_size,
                       status, error_message, activated, created_at
@@ -14447,7 +14393,7 @@ async def upload_chat_attachment(
     data = await file.read()
     filename = file.filename or "attachment"
     mime_type = file.content_type or ""
-    async with db_pool.acquire() as conn:
+    async with app.state.db_pool.acquire() as conn:
         row = await conn.fetchrow(
             """INSERT INTO chat_session_attachments
                (workspace_id, chat_session_id, filename, mime_type, file_size, status)
@@ -14468,14 +14414,14 @@ async def upload_chat_attachment(
             status = "truncated" if len(extracted) > max_chars else "ready"
             if status == "truncated":
                 extracted = extracted[:max_chars]
-            async with db_pool.acquire() as conn:
+            async with app.state.db_pool.acquire() as conn:
                 await conn.execute(
                     "UPDATE chat_session_attachments SET extracted_text = $1, status = $2 WHERE id = $3",
                     extracted, status, attachment_id,
                 )
         except Exception as exc:
             logger.error("chat attachment extraction failed id=%d: %s", attachment_id, exc)
-            async with db_pool.acquire() as conn:
+            async with app.state.db_pool.acquire() as conn:
                 await conn.execute(
                     "UPDATE chat_session_attachments SET status = 'failed', error_message = $1 WHERE id = $2",
                     str(exc)[:500], attachment_id,
@@ -14490,7 +14436,7 @@ async def delete_chat_attachment(
     request: Request, workspace_id: int, session_id: int, attachment_id: int
 ):
     await _ensure_user_workspace(request, workspace_id)
-    async with db_pool.acquire() as conn:
+    async with app.state.db_pool.acquire() as conn:
         await conn.execute(
             "DELETE FROM chat_session_attachments WHERE id = $1 AND workspace_id = $2 AND chat_session_id = $3",
             attachment_id, workspace_id, session_id,
@@ -14519,7 +14465,7 @@ async def chat_generate_document(
             if body.attachment_ids:
                 att_ids = [int(a["id"]) for a in body.attachment_ids if a.get("id") is not None]
                 if att_ids:
-                    async with db_pool.acquire() as conn:
+                    async with app.state.db_pool.acquire() as conn:
                         await conn.execute(
                             "UPDATE chat_session_attachments SET activated = TRUE"
                             " WHERE id = ANY($1::int[]) AND workspace_id = $2",
@@ -14738,7 +14684,7 @@ async def post_live_qa(request: Request, workspace_id: int, body: LiveQARequest)
     # Create or reuse session
     session_id = body.session_id
     if not session_id:
-        async with db_pool.acquire() as conn:
+        async with app.state.db_pool.acquire() as conn:
             row = await conn.fetchrow(
                 """INSERT INTO live_qa_sessions
                    (workspace_id, context_meeting_ids, context_document_ids, context_research_ids)
@@ -14771,7 +14717,7 @@ async def post_live_qa(request: Request, workspace_id: int, body: LiveQARequest)
 
         if body.research_ids:
             try:
-                async with db_pool.acquire() as conn:
+                async with app.state.db_pool.acquire() as conn:
                     r_rows = await conn.fetch(
                         """SELECT id, title, topic, summary, content
                            FROM research_sessions
@@ -14880,7 +14826,7 @@ async def post_live_qa(request: Request, workspace_id: int, body: LiveQARequest)
 
         # Persist Q&A entry
         try:
-            async with db_pool.acquire() as conn:
+            async with app.state.db_pool.acquire() as conn:
                 await conn.execute(
                     """INSERT INTO live_qa_entries
                        (session_id, question, answer, sources, detected, transcript_context)
@@ -14910,7 +14856,7 @@ async def post_live_qa(request: Request, workspace_id: int, body: LiveQARequest)
 @app.get("/workspaces/{workspace_id}/live-qa/{session_id}/entries")
 async def get_live_qa_entries(request: Request, workspace_id: int, session_id: int):
     await _ensure_user_workspace(request, workspace_id)
-    async with db_pool.acquire() as conn:
+    async with app.state.db_pool.acquire() as conn:
         # Verify session belongs to this workspace
         session = await conn.fetchrow(
             "SELECT id FROM live_qa_sessions WHERE id = $1 AND workspace_id = $2",
@@ -14986,7 +14932,7 @@ async def analyze_text(request: Request, body: AnalyzeTextRequest):
 async def ws_tts_stream(ws: WebSocket):
     await ws.accept()
     try:
-        if not piper_voice:
+        if not app.state.piper_voice:
             await ws.send_json({"type": "error", "message": "Streaming TTS not available — Piper model not loaded"})
             await ws.close()
             return
@@ -15048,7 +14994,7 @@ async def ws_tts_stream(ws: WebSocket):
         # Send audio config
         await ws.send_json({
             "type": "audio_config",
-            "sample_rate": piper_voice.config.sample_rate,
+            "sample_rate": app.state.piper_voice.config.sample_rate,
             "channels": 1,
             "bit_depth": 16,
             "encoding": "pcm_s16le",
