@@ -24,6 +24,39 @@ from starlette.responses import StreamingResponse
 from config import MINIO_BUCKET, PIPER_TTS_URL
 from models import TTSRequest
 from services.storage import get_minio_client
+from services.utils import _json_line
+
+# Consolidated main_live imports — surfaced at startup rather than per-request.
+from main_live import (  # noqa: E402
+    admin_backfill_office_ocr as _ml_admin_backfill_office_ocr,
+    analyze_with_llm as _ml_analyze_with_llm,
+    canvas_connect as _ml_canvas_connect,
+    canvas_courses as _ml_canvas_courses,
+    canvas_status as _ml_canvas_status,
+    drive_callback as _ml_drive_callback,
+    drive_files as _ml_drive_files,
+    drive_import as _ml_drive_import,
+    drive_status as _ml_drive_status,
+    extract_audio as _ml_extract_audio,
+    library_list as _ml_library_list,
+    library_share as _ml_library_share,
+    library_share_get as _ml_library_share_get,
+    library_upload_document as _ml_library_upload_document,
+    save_meeting as _ml_save_meeting,
+    team_chat_js as _ml_team_chat_js,
+    transcribe as _ml_transcribe,
+    workspace_canvas_link as _ml_workspace_canvas_link,
+    workspace_canvas_status as _ml_workspace_canvas_status,
+    workspace_canvas_sync as _ml_workspace_canvas_sync,
+    workspace_canvas_unlink as _ml_workspace_canvas_unlink,
+    workspace_drive_link as _ml_workspace_drive_link,
+    workspace_drive_status as _ml_workspace_drive_status,
+    workspace_drive_sync as _ml_workspace_drive_sync,
+    workspace_drive_unlink as _ml_workspace_drive_unlink,
+    workspace_link_content as _ml_workspace_link_content,
+    workspace_linked_content as _ml_workspace_linked_content,
+    workspace_unlink_content as _ml_workspace_unlink_content,
+)
 
 router = APIRouter()
 logger = logging.getLogger("meeting-analyzer")
@@ -85,50 +118,42 @@ async def tts_proxy(request: Request, body: TTSRequest):
 
 @router.get("/drive/status")
 async def drive_status(request: Request):
-    from main_live import drive_status as _impl
-    return await _impl(request)
+    return await _ml_drive_status(request)
 
 
 @router.get("/drive/callback")
 async def drive_callback(request: Request):
-    from main_live import drive_callback as _impl
-    return await _impl(request)
+    return await _ml_drive_callback(request)
 
 
 @router.get("/drive/files")
 async def drive_files(request: Request):
-    from main_live import drive_files as _impl
-    return await _impl(request)
+    return await _ml_drive_files(request)
 
 
 @router.post("/workspaces/{workspace_id}/drive/import")
 async def drive_import(request: Request, workspace_id: int):
-    from main_live import drive_import as _impl
-    return await _impl(request, workspace_id)
+    return await _ml_drive_import(request, workspace_id)
 
 
 @router.post("/workspaces/{workspace_id}/drive-link")
 async def workspace_drive_link(request: Request, workspace_id: int):
-    from main_live import workspace_drive_link as _impl
-    return await _impl(request, workspace_id)
+    return await _ml_workspace_drive_link(request, workspace_id)
 
 
 @router.delete("/workspaces/{workspace_id}/drive-link")
 async def workspace_drive_unlink(request: Request, workspace_id: int):
-    from main_live import workspace_drive_unlink as _impl
-    return await _impl(request, workspace_id)
+    return await _ml_workspace_drive_unlink(request, workspace_id)
 
 
 @router.post("/workspaces/{workspace_id}/drive-sync")
 async def workspace_drive_sync(request: Request, workspace_id: int):
-    from main_live import workspace_drive_sync as _impl
-    return await _impl(request, workspace_id)
+    return await _ml_workspace_drive_sync(request, workspace_id)
 
 
 @router.get("/workspaces/{workspace_id}/drive-status")
 async def workspace_drive_status(request: Request, workspace_id: int):
-    from main_live import workspace_drive_status as _impl
-    return await _impl(request, workspace_id)
+    return await _ml_workspace_drive_status(request, workspace_id)
 
 
 # ---------------------------------------------------------------------------
@@ -137,44 +162,37 @@ async def workspace_drive_status(request: Request, workspace_id: int):
 
 @router.get("/canvas/status")
 async def canvas_status(request: Request):
-    from main_live import canvas_status as _impl
-    return await _impl(request)
+    return await _ml_canvas_status(request)
 
 
 @router.post("/canvas/connect")
 async def canvas_connect(request: Request):
-    from main_live import canvas_connect as _impl
-    return await _impl(request)
+    return await _ml_canvas_connect(request)
 
 
 @router.get("/canvas/courses")
 async def canvas_courses(request: Request):
-    from main_live import canvas_courses as _impl
-    return await _impl(request)
+    return await _ml_canvas_courses(request)
 
 
 @router.post("/workspaces/{workspace_id}/canvas-link")
 async def workspace_canvas_link(request: Request, workspace_id: int):
-    from main_live import workspace_canvas_link as _impl
-    return await _impl(request, workspace_id)
+    return await _ml_workspace_canvas_link(request, workspace_id)
 
 
 @router.delete("/workspaces/{workspace_id}/canvas-link")
 async def workspace_canvas_unlink(request: Request, workspace_id: int):
-    from main_live import workspace_canvas_unlink as _impl
-    return await _impl(request, workspace_id)
+    return await _ml_workspace_canvas_unlink(request, workspace_id)
 
 
 @router.get("/workspaces/{workspace_id}/canvas-status")
 async def workspace_canvas_status(request: Request, workspace_id: int):
-    from main_live import workspace_canvas_status as _impl
-    return await _impl(request, workspace_id)
+    return await _ml_workspace_canvas_status(request, workspace_id)
 
 
 @router.post("/workspaces/{workspace_id}/canvas-sync")
 async def workspace_canvas_sync(request: Request, workspace_id: int):
-    from main_live import workspace_canvas_sync as _impl
-    return await _impl(request, workspace_id)
+    return await _ml_workspace_canvas_sync(request, workspace_id)
 
 
 # ---------------------------------------------------------------------------
@@ -183,44 +201,37 @@ async def workspace_canvas_sync(request: Request, workspace_id: int):
 
 @router.get("/library")
 async def library_list(request: Request):
-    from main_live import library_list as _impl
-    return await _impl(request)
+    return await _ml_library_list(request)
 
 
 @router.post("/library/share")
 async def library_share(request: Request):
-    from main_live import library_share as _impl
-    return await _impl(request)
+    return await _ml_library_share(request)
 
 
 @router.get("/library/shares/{content_type}/{content_id}")
 async def library_share_get(request: Request, content_type: str, content_id: str):
-    from main_live import library_share_get as _impl
-    return await _impl(request, content_type, content_id)
+    return await _ml_library_share_get(request, content_type, content_id)
 
 
 @router.post("/library/documents")
 async def library_upload_document(request: Request):
-    from main_live import library_upload_document as _impl
-    return await _impl(request)
+    return await _ml_library_upload_document(request)
 
 
 @router.post("/workspaces/{workspace_id}/link")
 async def workspace_link_content(request: Request, workspace_id: int):
-    from main_live import workspace_link_content as _impl
-    return await _impl(request, workspace_id)
+    return await _ml_workspace_link_content(request, workspace_id)
 
 
 @router.delete("/workspaces/{workspace_id}/unlink/{content_type}/{content_id}")
 async def workspace_unlink_content(request: Request, workspace_id: int, content_type: str, content_id: str):
-    from main_live import workspace_unlink_content as _impl
-    return await _impl(request, workspace_id, content_type, content_id)
+    return await _ml_workspace_unlink_content(request, workspace_id, content_type, content_id)
 
 
 @router.get("/workspaces/{workspace_id}/linked-content")
 async def workspace_linked_content(request: Request, workspace_id: int):
-    from main_live import workspace_linked_content as _impl
-    return await _impl(request, workspace_id)
+    return await _ml_workspace_linked_content(request, workspace_id)
 
 
 # ---------------------------------------------------------------------------
@@ -229,8 +240,7 @@ async def workspace_linked_content(request: Request, workspace_id: int):
 
 @router.get("/team-chat.js")
 async def team_chat_js(request: Request):
-    from main_live import team_chat_js as _impl
-    return await _impl(request)
+    return await _ml_team_chat_js(request)
 
 
 # ---------------------------------------------------------------------------
@@ -313,9 +323,6 @@ async def analyze(
     file: UploadFile = File(...),
     workspace_id: int | None = Query(default=None),
 ):
-    from main_live import (
-        extract_audio, transcribe, analyze_with_llm, save_meeting, _json_line,
-    )
     if not file.filename or not file.filename.lower().endswith((".mp4", ".m4a", ".mp3")):
         raise HTTPException(status_code=400, detail="Only MP4, M4A, and MP3 files are supported.")
 
@@ -337,7 +344,7 @@ async def analyze(
 
             yield json.dumps({"status": "Extracting audio with ffmpeg..."}) + "\n"
             try:
-                await extract_audio(input_path, audio_path)
+                await _ml_extract_audio(input_path, audio_path)
             except RuntimeError as e:
                 logger.error("ffmpeg failed for %s: %s", original_filename, e)
                 yield json.dumps({"error": str(e)}) + "\n"
@@ -345,7 +352,7 @@ async def analyze(
 
             yield json.dumps({"status": "Transcribing audio..."}) + "\n"
             try:
-                transcript = await transcribe(audio_path)
+                transcript = await _ml_transcribe(audio_path)
             except Exception as e:
                 logger.error("Transcription failed for %s: %s", original_filename, e)
                 yield json.dumps({"error": f"Transcription failed: {e}"}) + "\n"
@@ -357,7 +364,7 @@ async def analyze(
 
             yield json.dumps({"status": "Analyzing with AI..."}) + "\n"
             try:
-                analysis, _ = await analyze_with_llm(transcript, workspace_id)
+                analysis, _ = await _ml_analyze_with_llm(transcript, workspace_id)
             except Exception as e:
                 logger.error("LLM analysis failed for %s: %s", original_filename, e)
                 yield json.dumps({"error": f"Analysis failed: {e}"}) + "\n"
@@ -365,7 +372,7 @@ async def analyze(
 
             yield json.dumps({"status": "Saving results..."}) + "\n"
             try:
-                meeting_id = await save_meeting(original_filename, transcript, analysis, workspace_id, uid)
+                meeting_id = await _ml_save_meeting(original_filename, transcript, analysis, workspace_id, uid)
             except Exception as e:
                 logger.error("Save failed for %s: %s", original_filename, e)
                 yield json.dumps({"error": f"Failed to save meeting: {e}"}) + "\n"
@@ -391,5 +398,4 @@ async def analyze(
 
 @router.post("/admin/backfill-office-ocr")
 async def admin_backfill_office_ocr(request: Request):
-    from main_live import admin_backfill_office_ocr as _impl
-    return await _impl(request)
+    return await _ml_admin_backfill_office_ocr(request)

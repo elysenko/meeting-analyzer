@@ -8,6 +8,7 @@ POST /workspaces/{id}/generate (legacy streaming generate)
 import asyncio
 import json
 import logging
+from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import APIRouter, Body, HTTPException, Request
@@ -19,7 +20,56 @@ from models import (
     GenerateTaskQuestionResearchRequest, GenerateTaskResearchRequest,
     GenerateTaskUpdateRequest, QuestionChatRequest,
 )
+from services.llm_prefs import _resolve_task_llm
+from services.llm_prefs_svc import _get_workspace_llm_preferences
+from services.research_svc import _get_template_config
+from services.utils import _json_dict, _json_line
 from services.workspace_svc import _ensure_user_workspace
+
+# Heavy orchestration helpers live in main_live during the refactor.
+# Consolidated here so import errors surface at startup rather than per-request.
+from main_live import (  # noqa: E402
+    _build_docx_bytes,
+    _build_generate_answer_meta_patch,
+    _build_generate_question_context,
+    _build_generate_task_research_topic,
+    _build_generation_context,
+    _build_pdf_bytes,
+    _build_pptx_bytes,
+    _build_task_document_evidence,
+    _call_llm_runner,
+    _call_llm_runner_json,
+    _collect_manual_answer_conflicts,
+    _create_or_get_generate_task_session,
+    _dedupe_document_refs,
+    _delete_generate_task_run,
+    _delete_generate_task_session,
+    _derive_generate_run_intake,
+    _document_evidence_prompt_block,
+    _ensure_task_linked_research_session,
+    _extract_branding_from_website,
+    _fork_generate_task_run,
+    _generate_research_refinement_questions,
+    _generate_task_answer_autofill,
+    _get_generate_task_session,
+    _list_generate_task_sessions,
+    _map_reduce_synthesis,
+    _normalize_generate_template_draft,
+    _reset_generate_task_step,
+    _run_generate_task_deliverable_stream,
+    _run_generate_task_question_chat,
+    _run_generate_task_question_research,
+    _run_generate_task_research_stream,
+    _run_quick_research,
+    _sanitize_question_plan_item,
+    _slugify,
+    _split_context_sections,
+    _store_generated_document,
+    _suggest_refinement_prefill,
+    _update_generate_task_session_row,
+    _update_research_session,
+    test_intake_flow as _test_intake_flow_impl,
+)
 
 router = APIRouter()
 logger = logging.getLogger("meeting-analyzer")
@@ -31,14 +81,12 @@ logger = logging.getLogger("meeting-analyzer")
 
 @router.get("/workspaces/{workspace_id}/generate/tasks")
 async def list_generate_tasks(request: Request, workspace_id: int):
-    from main_live import _list_generate_task_sessions
     await _ensure_user_workspace(request, workspace_id)
     return await _list_generate_task_sessions(workspace_id)
 
 
 @router.post("/workspaces/{workspace_id}/generate/tasks")
 async def create_generate_task(request: Request, workspace_id: int, body: GenerateTaskCreateRequest):
-    from main_live import _create_or_get_generate_task_session
     await _ensure_user_workspace(request, workspace_id)
     return await _create_or_get_generate_task_session(
         workspace_id,
@@ -51,28 +99,24 @@ async def create_generate_task(request: Request, workspace_id: int, body: Genera
 
 @router.get("/workspaces/{workspace_id}/generate/tasks/{task_id}")
 async def get_generate_task(request: Request, workspace_id: int, task_id: int, run_id: int | None = None):
-    from main_live import _get_generate_task_session
     await _ensure_user_workspace(request, workspace_id)
     return await _get_generate_task_session(workspace_id, task_id, run_id=run_id)
 
 
 @router.patch("/workspaces/{workspace_id}/generate/tasks/{task_id}")
 async def patch_generate_task(request: Request, workspace_id: int, task_id: int, body: GenerateTaskUpdateRequest):
-    from main_live import _update_generate_task_session_row
     await _ensure_user_workspace(request, workspace_id)
     return await _update_generate_task_session_row(workspace_id, task_id, body)
 
 
 @router.delete("/workspaces/{workspace_id}/generate/tasks/{task_id}")
 async def delete_generate_task(request: Request, workspace_id: int, task_id: int):
-    from main_live import _delete_generate_task_session
     await _ensure_user_workspace(request, workspace_id)
     return await _delete_generate_task_session(workspace_id, task_id)
 
 
 @router.post("/workspaces/{workspace_id}/generate/tasks/{task_id}/reset-step")
 async def reset_generate_task_step_endpoint(request: Request, workspace_id: int, task_id: int, body: dict = Body(...)):
-    from main_live import _reset_generate_task_step
     step = str(body.get("step") or "").strip()
     if step not in ("setup", "research", "intake", "review"):
         raise HTTPException(status_code=400, detail="Invalid step")
@@ -82,14 +126,12 @@ async def reset_generate_task_step_endpoint(request: Request, workspace_id: int,
 
 @router.post("/workspaces/{workspace_id}/generate/tasks/{task_id}/runs/{run_id}/fork")
 async def fork_generate_task_run(request: Request, workspace_id: int, task_id: int, run_id: int):
-    from main_live import _fork_generate_task_run
     await _ensure_user_workspace(request, workspace_id)
     return await _fork_generate_task_run(workspace_id, task_id, run_id)
 
 
 @router.delete("/workspaces/{workspace_id}/generate/tasks/{task_id}/runs/{run_id}")
 async def delete_generate_task_run(request: Request, workspace_id: int, task_id: int, run_id: int):
-    from main_live import _delete_generate_task_run
     await _ensure_user_workspace(request, workspace_id)
     return await _delete_generate_task_run(workspace_id, task_id, run_id)
 
@@ -100,10 +142,6 @@ async def delete_generate_task_run(request: Request, workspace_id: int, task_id:
 
 @router.post("/workspaces/{workspace_id}/generate/tasks/{task_id}/brand/refresh")
 async def refresh_generate_task_branding(request: Request, workspace_id: int, task_id: int, body: BrandRefreshRequest):
-    from main_live import (
-        _get_generate_task_session,
-        _extract_branding_from_website, _update_generate_task_session_row,
-    )
     await _ensure_user_workspace(request, workspace_id)
     session = await _get_generate_task_session(workspace_id, task_id)
     branding = await _extract_branding_from_website(body.website_url)
@@ -123,13 +161,6 @@ async def refresh_generate_task_branding(request: Request, workspace_id: int, ta
 
 @router.post("/workspaces/{workspace_id}/generate/tasks/{task_id}/research/refine")
 async def refine_generate_task_research(request: Request, workspace_id: int, task_id: int, body: GenerateTaskResearchRequest):
-    from main_live import (
-        _get_generate_task_session,
-        _build_generate_task_research_topic, _generate_research_refinement_questions,
-        _build_task_document_evidence, _build_generate_question_context,
-        _document_evidence_prompt_block, _suggest_refinement_prefill,
-        _dedupe_document_refs,
-    )
     await _ensure_user_workspace(request, workspace_id)
     session = await _get_generate_task_session(workspace_id, task_id)
     mode = (body.mode or "quick").strip().lower()
@@ -177,9 +208,6 @@ async def refine_generate_task_research(request: Request, workspace_id: int, tas
 
 @router.post("/workspaces/{workspace_id}/generate/tasks/{task_id}/questions")
 async def generate_task_questions(request: Request, workspace_id: int, task_id: int):
-    from main_live import (
-        _get_generate_task_session, _derive_generate_run_intake,
-    )
     await _ensure_user_workspace(request, workspace_id)
     session = await _get_generate_task_session(workspace_id, task_id)
     return await _derive_generate_run_intake(workspace_id, task_id, session)
@@ -187,13 +215,6 @@ async def generate_task_questions(request: Request, workspace_id: int, task_id: 
 
 @router.post("/workspaces/{workspace_id}/generate/tasks/{task_id}/template/refine")
 async def refine_generate_task_template(request: Request, workspace_id: int, task_id: int, body: dict):
-    from main_live import (
-        _get_generate_task_session,
-        _get_template_config, _get_workspace_llm_preferences, _resolve_task_llm,
-        _call_llm_runner_json, _json_dict, _normalize_generate_template_draft,
-        _update_generate_task_session_row,
-    )
-    from datetime import datetime, timezone
     await _ensure_user_workspace(request, workspace_id)
     user_message = (body.get("message") or "").strip()
     if not user_message:
@@ -203,7 +224,7 @@ async def refine_generate_task_template(request: Request, workspace_id: int, tas
     chat_history = list(session.get("template_chat_history") or [])
     config = _get_template_config(session.get("artifact_template") or "requirements")
     template_label = config["label"]
-    preferences = await _get_workspace_llm_preferences(workspace_id)
+    preferences = await _get_workspace_llm_preferences(request.app.state.db_pool, workspace_id)
     provider, model = _resolve_task_llm(preferences, "generate")
     current_draft_json = json.dumps(template_draft, indent=2)
     system_prompt = f"""\
@@ -270,12 +291,6 @@ Only return valid JSON - no markdown, no code blocks."""
 @router.post("/workspaces/{workspace_id}/generate/tasks/{task_id}/sections")
 async def add_custom_section(request: Request, workspace_id: int, task_id: int, body: AddCustomSectionRequest):
     """Add a custom section to the question plan, then run FTS + autofill for it."""
-    from main_live import (
-        _get_generate_task_session, _slugify,
-        _sanitize_question_plan_item, _update_generate_task_session_row,
-        _generate_task_answer_autofill, _build_generate_answer_meta_patch,
-    )
-    from datetime import datetime, timezone
     await _ensure_user_workspace(request, workspace_id)
     heading = (body.heading or "").strip()
     if not heading:
@@ -337,12 +352,6 @@ async def add_custom_section(request: Request, workspace_id: int, task_id: int, 
 
 @router.post("/workspaces/{workspace_id}/generate/tasks/{task_id}/answers/autofill")
 async def autofill_generate_task_answers(request: Request, workspace_id: int, task_id: int, body: GenerateTaskAutofillRequest):
-    from main_live import (
-        _get_generate_task_session,
-        _collect_manual_answer_conflicts, _generate_task_answer_autofill,
-        _build_generate_answer_meta_patch, _update_generate_task_session_row,
-    )
-    from datetime import datetime, timezone
     await _ensure_user_workspace(request, workspace_id)
     session = await _get_generate_task_session(workspace_id, task_id)
     guidance = (body.guidance or "").strip() or None
@@ -398,10 +407,6 @@ async def autofill_generate_task_answers(request: Request, workspace_id: int, ta
 
 @router.post("/workspaces/{workspace_id}/generate/tasks/{task_id}/question-research")
 async def generate_task_question_research(request: Request, workspace_id: int, task_id: int, body: GenerateTaskQuestionResearchRequest):
-    from main_live import (
-        _get_generate_task_session,
-        _run_generate_task_question_research,
-    )
     await _ensure_user_workspace(request, workspace_id)
     session = await _get_generate_task_session(workspace_id, task_id)
     question_key = (body.question_key or "").strip()
@@ -422,10 +427,6 @@ async def generate_task_question_research(request: Request, workspace_id: int, t
 
 @router.post("/workspaces/{workspace_id}/generate/tasks/{task_id}/question-chat")
 async def generate_task_question_chat(request: Request, workspace_id: int, task_id: int, body: QuestionChatRequest):
-    from main_live import (
-        _get_generate_task_session,
-        _run_generate_task_question_chat,
-    )
     await _ensure_user_workspace(request, workspace_id)
     session = await _get_generate_task_session(workspace_id, task_id)
     question_key = (body.question_key or "").strip()
@@ -449,10 +450,6 @@ async def generate_task_question_chat(request: Request, workspace_id: int, task_
 
 @router.post("/workspaces/{workspace_id}/generate/tasks/{task_id}/research")
 async def run_generate_task_research(request: Request, workspace_id: int, task_id: int, body: GenerateTaskResearchRequest):
-    from main_live import (
-        _get_generate_task_session,
-        _run_generate_task_research_stream,
-    )
     await _ensure_user_workspace(request, workspace_id)
     session = await _get_generate_task_session(workspace_id, task_id)
 
@@ -470,10 +467,6 @@ async def run_generate_task_research(request: Request, workspace_id: int, task_i
 
 @router.post("/workspaces/{workspace_id}/generate/tasks/{task_id}/deliverable")
 async def generate_task_deliverable(request: Request, workspace_id: int, task_id: int, body: DeliverableRequest):
-    from main_live import (
-        _get_generate_task_session,
-        _run_generate_task_deliverable_stream,
-    )
     await _ensure_user_workspace(request, workspace_id)
     session = await _get_generate_task_session(workspace_id, task_id)
 
@@ -492,18 +485,9 @@ async def generate_task_deliverable(request: Request, workspace_id: int, task_id
 @router.post("/workspaces/{workspace_id}/generate/tasks/{task_id}/test-intake")
 async def test_intake_flow(request: Request, workspace_id: int, task_id: int):
     """Test endpoint: run research → approve outline → derive intake, return summary."""
-    from main_live import (
-        _get_generate_task_session,
-        _ensure_task_linked_research_session, _build_generate_task_research_topic,
-        _build_task_document_evidence, _build_generate_question_context,
-        _document_evidence_prompt_block, _update_research_session,
-        _run_quick_research, _get_template_config, _get_workspace_llm_preferences,
-        _resolve_task_llm, _derive_generate_run_intake,
-    )
     await _ensure_user_workspace(request, workspace_id)
     session = await _get_generate_task_session(workspace_id, task_id)
     # defer to the full complex logic in main_live
-    from main_live import test_intake_flow as _test_intake_flow_impl
     return await _test_intake_flow_impl(request, workspace_id, task_id)
 
 
@@ -513,14 +497,6 @@ async def test_intake_flow(request: Request, workspace_id: int, task_id: int):
 
 @router.post("/workspaces/{workspace_id}/generate")
 async def generate_document(request: Request, workspace_id: int, body: GenerateRequest):
-    from main_live import (
-        _build_generation_context,
-        _get_workspace_llm_preferences, _resolve_task_llm,
-        _split_context_sections, _map_reduce_synthesis,
-        _call_llm_runner, _slugify, _store_generated_document,
-        _call_llm_runner_json, _json_dict, _json_line,
-        _build_pdf_bytes, _build_pptx_bytes, _build_docx_bytes,
-    )
     await _ensure_user_workspace(request, workspace_id)
     output_type = (body.output_type or "document").strip().lower()
     if output_type not in ("document", "pdf", "pptx", "docx"):
@@ -543,7 +519,7 @@ async def generate_document(request: Request, workspace_id: int, body: GenerateR
         if warned:
             yield json.dumps({"warning": "Context exceeded limit. Some longer content was excluded."}) + "\n"
 
-        preferences = await _get_workspace_llm_preferences(workspace_id)
+        preferences = await _get_workspace_llm_preferences(request.app.state.db_pool, workspace_id)
         provider, model = _resolve_task_llm(preferences, "generate")
 
         base_title = (body.title or prompt_text[:60]).strip()
