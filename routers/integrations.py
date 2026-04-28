@@ -23,13 +23,14 @@ from starlette.responses import StreamingResponse
 
 from config import MINIO_BUCKET, PIPER_TTS_URL
 from models import TTSRequest
+from services import meetings_svc as _meetings_svc
 from services.storage import get_minio_client
 from services.utils import _json_line
 
 # Consolidated main_live imports — surfaced at startup rather than per-request.
+# Drive/Canvas/Library/admin handlers live in main_live until E9 migrates them.
 from main_live import (  # noqa: E402
     admin_backfill_office_ocr as _ml_admin_backfill_office_ocr,
-    analyze_with_llm as _ml_analyze_with_llm,
     canvas_connect as _ml_canvas_connect,
     canvas_courses as _ml_canvas_courses,
     canvas_status as _ml_canvas_status,
@@ -37,14 +38,11 @@ from main_live import (  # noqa: E402
     drive_files as _ml_drive_files,
     drive_import as _ml_drive_import,
     drive_status as _ml_drive_status,
-    extract_audio as _ml_extract_audio,
     library_list as _ml_library_list,
     library_share as _ml_library_share,
     library_share_get as _ml_library_share_get,
     library_upload_document as _ml_library_upload_document,
-    save_meeting as _ml_save_meeting,
     team_chat_js as _ml_team_chat_js,
-    transcribe as _ml_transcribe,
     workspace_canvas_link as _ml_workspace_canvas_link,
     workspace_canvas_status as _ml_workspace_canvas_status,
     workspace_canvas_sync as _ml_workspace_canvas_sync,
@@ -332,6 +330,8 @@ async def analyze(
     logger.info("Upload received: %s (%.1f MB), workspace=%s", original_filename, file_size_mb, workspace_id)
     uid = getattr(request.state, "user_id", None)
 
+    pool = request.app.state.db_pool
+
     async def stream():
         with tempfile.TemporaryDirectory() as tmpdir:
             input_path = os.path.join(tmpdir, "input.mp4")
@@ -344,7 +344,7 @@ async def analyze(
 
             yield json.dumps({"status": "Extracting audio with ffmpeg..."}) + "\n"
             try:
-                await _ml_extract_audio(input_path, audio_path)
+                await _meetings_svc.extract_audio(input_path, audio_path)
             except RuntimeError as e:
                 logger.error("ffmpeg failed for %s: %s", original_filename, e)
                 yield json.dumps({"error": str(e)}) + "\n"
@@ -352,7 +352,7 @@ async def analyze(
 
             yield json.dumps({"status": "Transcribing audio..."}) + "\n"
             try:
-                transcript = await _ml_transcribe(audio_path)
+                transcript = await _meetings_svc.transcribe(audio_path)
             except Exception as e:
                 logger.error("Transcription failed for %s: %s", original_filename, e)
                 yield json.dumps({"error": f"Transcription failed: {e}"}) + "\n"
@@ -364,7 +364,7 @@ async def analyze(
 
             yield json.dumps({"status": "Analyzing with AI..."}) + "\n"
             try:
-                analysis, _ = await _ml_analyze_with_llm(transcript, workspace_id)
+                analysis, _ = await _meetings_svc.analyze_with_llm(pool, transcript, workspace_id)
             except Exception as e:
                 logger.error("LLM analysis failed for %s: %s", original_filename, e)
                 yield json.dumps({"error": f"Analysis failed: {e}"}) + "\n"
@@ -372,7 +372,7 @@ async def analyze(
 
             yield json.dumps({"status": "Saving results..."}) + "\n"
             try:
-                meeting_id = await _ml_save_meeting(original_filename, transcript, analysis, workspace_id, uid)
+                meeting_id = await _meetings_svc.save_meeting(pool, original_filename, transcript, analysis, workspace_id, uid)
             except Exception as e:
                 logger.error("Save failed for %s: %s", original_filename, e)
                 yield json.dumps({"error": f"Failed to save meeting: {e}"}) + "\n"
