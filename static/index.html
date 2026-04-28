@@ -12808,6 +12808,8 @@ async function startChatResearch(mode) {
   var statusEl = addChatMessage('assistant', 'Starting ' + mode + ' research...', { html: '<em>Starting ' + mode + ' research...</em>' });
   statusEl.classList.add('streaming');
   var contentEl = statusEl.querySelector('.msg-content');
+  var controller = new AbortController();
+  activeChatRequestController = controller;
   syncChatControlState();
 
   try {
@@ -12822,7 +12824,8 @@ async function startChatResearch(mode) {
         meeting_ids: ctx.meeting_ids || [],
         research_ids: ctx.include_research_ids || [],
         chat_session_id: currentChatSessionId || null
-      })
+      }),
+      signal: controller.signal
     });
     if (!resp.ok) {
       var errBody = await resp.json().catch(function() { return { detail: resp.statusText }; });
@@ -12869,9 +12872,16 @@ async function startChatResearch(mode) {
     }
   } catch (err) {
     statusEl.classList.remove('streaming');
-    contentEl.textContent = 'Research failed: ' + (err.message || 'Unknown error');
+    var aborted = controller.signal.aborted || (err && err.name === 'AbortError');
+    if (aborted) {
+      contentEl.innerHTML = '<em>Research stopped.</em>';
+    } else {
+      contentEl.textContent = 'Research failed: ' + (err.message || 'Unknown error');
+    }
+  } finally {
+    if (activeChatRequestController === controller) activeChatRequestController = null;
+    syncChatControlState();
   }
-  syncChatControlState();
 }
 
 function addChatMessage(role, content, options) {
