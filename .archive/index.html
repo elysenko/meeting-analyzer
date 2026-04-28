@@ -1,0 +1,439 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Library Mockup — Before &amp; After</title>
+<link href="https://fonts.googleapis.com/css2?family=DM+Serif+Display&family=Literata:opsz,wght@7..72,400;7..72,500&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  /* ── App design tokens (from App.css :root) ── */
+  :root {
+    --bg: #ffffff; --bg-warm: #f8f6f3;
+    --surface: #f2eeea; --surface-raised: #ebe6e0;
+    --border: #ddd5cb; --border-light: #c9bfb3;
+    --text: #2c2419; --text-secondary: #6b5d4f; --text-dim: #9a8d7f;
+    --accent: #a07040; --accent-glow: #b8844e; --accent-dim: #c49a68;
+    --red: #b84040; --red-bg: #fdf0f0; --green: #4a8a4a;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: 'Literata', Georgia, serif; background: var(--bg);
+    color: var(--text); -webkit-font-smoothing: antialiased;
+  }
+
+  /* ── Mockup layout ── */
+  .mockup-header {
+    text-align: center; padding: 2rem 1.5rem 1rem;
+    border-bottom: 1px solid var(--border); margin-bottom: 2rem;
+  }
+  .mockup-header h1 {
+    font-family: 'DM Serif Display', Georgia, serif;
+    font-size: 1.8rem; font-weight: 400; margin-bottom: 0.4rem;
+  }
+  .mockup-header p { font-size: 0.9rem; color: var(--text-secondary); }
+  .mockup-columns {
+    display: grid; grid-template-columns: 1fr 1fr; gap: 2rem;
+    max-width: 1300px; margin: 0 auto; padding: 0 1.5rem 4rem;
+  }
+  @media (max-width: 900px) { .mockup-columns { grid-template-columns: 1fr; } }
+  .mockup-col { min-width: 0; }
+  .mockup-label {
+    font-family: 'JetBrains Mono', monospace; font-size: 0.72rem;
+    text-transform: uppercase; letter-spacing: 0.1em;
+    padding: 0.5rem 1rem; border-radius: 8px 8px 0 0;
+    font-weight: 600; margin-bottom: 0;
+  }
+  .mockup-label.before { background: var(--red-bg); color: var(--red); }
+  .mockup-label.after { background: #edf7ed; color: var(--green); }
+  .mockup-frame {
+    border: 1px solid var(--border); border-radius: 0 12px 12px 12px;
+    background: var(--bg); overflow: hidden;
+  }
+
+  /* ── Shared components (from actual app) ── */
+  .page { max-width: 1120px; margin: 0 auto; padding: 2rem 1.5rem; }
+  .ws-nav {
+    display: flex; align-items: center; gap: 1rem; margin-bottom: 1.5rem;
+  }
+  .back-btn {
+    background: none; border: 1px solid var(--border); color: var(--text-secondary);
+    font-family: 'Literata', serif; font-size: 0.85rem;
+    padding: 0.35rem 0.8rem; border-radius: 8px; cursor: pointer; transition: all 0.2s;
+    display: flex; align-items: center; gap: 0.3rem;
+  }
+  .back-btn:hover { border-color: var(--border-light); color: var(--text); }
+  .ws-name {
+    font-family: 'DM Serif Display', Georgia, serif;
+    font-size: 1.5rem; font-weight: 400; flex: 1;
+  }
+  .tabs-row {
+    display: flex; gap: 0; margin-bottom: 1.5rem; border-bottom: 1px solid var(--border);
+  }
+  .tab-btn {
+    padding: 0.6rem 1.25rem; font-family: 'JetBrains Mono', monospace;
+    font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.08em;
+    color: var(--text-dim); cursor: pointer; border: none; background: none;
+    border-bottom: 2px solid transparent; margin-bottom: -1px; transition: all 0.2s;
+  }
+  .tab-btn:hover { color: var(--text-secondary); }
+  .tab-btn.active { color: var(--accent); border-bottom-color: var(--accent); }
+  .accent-btn {
+    background: none; border: 1px solid var(--accent-dim); color: var(--accent);
+    font-family: 'JetBrains Mono', monospace; font-size: 0.72rem;
+    padding: 0.35rem 0.9rem; border-radius: 6px; cursor: pointer; transition: all 0.2s;
+  }
+  .accent-btn:hover { background: var(--accent-dim); color: var(--bg); }
+  .empty-state { color: var(--text-dim); text-align: center; padding: 2rem; font-size: 0.9rem; }
+
+  /* ── BEFORE: library-item (inline-styled flat rows) ── */
+  .library-item {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 0.5rem 0; border-bottom: 1px solid var(--border);
+  }
+  .library-item-info { flex: 1; min-width: 0; }
+  .library-item-title {
+    font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .library-item-meta { font-size: 0.75rem; color: #888; }
+  .library-item-badge-old {
+    background: #e0f2fe; color: #0369a1; font-size: 0.7rem;
+    padding: 1px 6px; border-radius: 4px; margin-left: 0.4rem;
+  }
+  .library-item-ws { color: #888; font-size: 0.75rem; }
+  .library-item-ws.lib-only { color: #b45309; }
+  .library-item-actions { display: flex; gap: 0.3rem; }
+  .share-btn-old {
+    font-size: 0.75rem; padding: 2px 8px; border: 1px solid var(--border);
+    border-radius: 4px; cursor: pointer; background: none; color: var(--text-secondary);
+  }
+  /* Unstyled tab buttons (BEFORE — no CSS definition exists) */
+  .ws-tab-btn-old {
+    border: none; background: none; padding: 0.4rem 0.6rem;
+    font-family: inherit; font-size: 0.85rem; color: var(--text-dim); cursor: pointer;
+  }
+  .ws-tab-btn-old.active { font-weight: 600; color: var(--text); }
+  .toolbar-old {
+    display: flex; justify-content: flex-end; margin-bottom: 0.5rem; gap: 0.5rem; flex-wrap: wrap;
+  }
+  .plain-btn-old {
+    padding: 0.4rem 0.8rem; border: 1px solid var(--border); border-radius: 8px;
+    font-size: 0.8rem; cursor: pointer; background: none; color: var(--text-secondary);
+    display: flex; align-items: center; gap: 0.4rem;
+  }
+
+  /* ── AFTER: library-card (matching meeting-card pattern) ── */
+  .library-card {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 12px; padding: 1.25rem; margin-bottom: 0.75rem;
+    cursor: pointer; transition: all 0.2s;
+    display: flex; align-items: center; justify-content: space-between;
+  }
+  .library-card:hover {
+    border-color: var(--border-light); background: var(--surface-raised);
+    transform: translateY(-1px);
+  }
+  .lc-info { flex: 1; min-width: 0; }
+  .lc-title {
+    font-family: 'DM Serif Display', Georgia, serif;
+    font-size: 1.05rem; color: var(--text); margin-bottom: 0.3rem;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .lc-meta {
+    font-family: 'JetBrains Mono', monospace; font-size: 0.72rem;
+    color: var(--text-dim);
+  }
+  .lc-shared-badge {
+    font-family: 'JetBrains Mono', monospace; font-size: 0.65rem;
+    color: var(--accent); border: 1px solid var(--accent-dim);
+    padding: 0.1rem 0.4rem; border-radius: 4px; margin-left: 0.4rem;
+  }
+  .lc-actions {
+    display: flex; gap: 0.5rem; flex-shrink: 0; margin-left: 1rem;
+  }
+  .lc-share-btn {
+    background: none; border: 1px solid var(--border); color: var(--text-dim);
+    font-family: 'JetBrains Mono', monospace; font-size: 0.72rem;
+    padding: 0.3rem 0.8rem; border-radius: 6px; cursor: pointer;
+    transition: all 0.2s; text-transform: uppercase; letter-spacing: 0.05em;
+  }
+  .lc-share-btn:hover { border-color: var(--accent-dim); color: var(--accent); }
+  .library-toolbar {
+    display: flex; justify-content: flex-end; gap: 0.5rem; flex-wrap: wrap;
+    margin-bottom: 1rem;
+  }
+
+  /* ── Reference: meeting-card (for comparison) ── */
+  .meeting-card {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 12px; padding: 1.25rem; margin-bottom: 0.75rem;
+    cursor: pointer; transition: all 0.2s;
+  }
+  .meeting-card:hover {
+    border-color: var(--border-light); background: var(--surface-raised);
+    transform: translateY(-1px);
+  }
+  .mc-title {
+    font-family: 'DM Serif Display', Georgia, serif;
+    font-size: 1.05rem; color: var(--text); margin-bottom: 0.3rem;
+  }
+  .mc-meta {
+    font-family: 'JetBrains Mono', monospace; font-size: 0.72rem;
+    color: var(--text-dim); margin-bottom: 0.5rem;
+  }
+  .mc-summary {
+    font-size: 0.9rem; color: var(--text-secondary); line-height: 1.6;
+    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+  }
+
+  /* ── Callout annotations ── */
+  .callout {
+    font-family: 'JetBrains Mono', monospace; font-size: 0.68rem;
+    color: var(--green); border: 1px dashed var(--green);
+    border-radius: 6px; padding: 0.4rem 0.6rem; margin: 1rem 0 0.5rem;
+    text-align: center; background: #f6fbf6;
+  }
+  .callout.problem {
+    color: var(--red); border-color: var(--red); background: var(--red-bg);
+  }
+
+  /* Reference section */
+  .ref-section {
+    margin-top: 1.5rem; padding-top: 1rem; border-top: 1px solid var(--border);
+  }
+  .ref-label {
+    font-family: 'JetBrains Mono', monospace; font-size: 0.7rem;
+    text-transform: uppercase; letter-spacing: 0.1em;
+    color: var(--accent); margin-bottom: 0.75rem;
+  }
+</style>
+</head>
+<body>
+
+<div class="mockup-header">
+  <h1>Library Section — Formatting Mockup</h1>
+  <p>Side-by-side: current inline-styled rows vs. card-based layout matching meeting-card pattern</p>
+</div>
+
+<div class="mockup-columns">
+
+  <!-- ════════ BEFORE ════════ -->
+  <div class="mockup-col">
+    <div class="mockup-label before">Before — Current</div>
+    <div class="mockup-frame">
+      <div class="page">
+        <div class="ws-nav">
+          <button class="back-btn">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
+            Back
+          </button>
+          <h2 class="ws-name">My Library</h2>
+        </div>
+
+        <!-- Unstyled tab buttons (no CSS class definition exists) -->
+        <div style="display:flex;gap:0;margin-bottom:1rem">
+          <button class="ws-tab-btn-old active">Documents</button>
+          <button class="ws-tab-btn-old">Meetings</button>
+          <button class="ws-tab-btn-old">Research</button>
+        </div>
+
+        <div class="callout problem">⚠ Tabs have no CSS definition — unstyled browser defaults</div>
+
+        <!-- Toolbar with inline styles -->
+        <div class="toolbar-old">
+          <button class="plain-btn-old">
+            <svg viewBox="0 0 87.3 78" width="16" height="14"><path d="M6.6 66.85l3.85 6.65c.8 1.4 1.95 2.5 3.3 3.3L29.15 49.7H0c0 1.55.4 3.1 1.2 4.5z" fill="#0066DA"/><path d="M43.65 25.15L29.15 0c-1.35.8-2.5 1.9-3.3 3.3L1.2 44.2c-.8 1.4-1.2 2.95-1.2 4.5h29.15z" fill="#00AC47"/><path d="M43.65 25.15L58.15 0H29.15c-1.55 0-3.1.4-4.5 1.2L43.65 25.15z" fill="#EA4335"/></svg>
+            Google Drive
+          </button>
+          <button class="accent-btn">Upload Document</button>
+        </div>
+
+        <div class="callout problem">⚠ Flat rows with inline styles, no visual hierarchy</div>
+
+        <!-- Document items — current inline-styled rows -->
+        <div class="library-item">
+          <div class="library-item-info">
+            <div class="library-item-title">Q4 Budget Report.xlsx</div>
+            <div class="library-item-meta">Text extracted · <span class="library-item-ws">in workspace</span></div>
+          </div>
+          <div class="library-item-actions">
+            <button class="share-btn-old">Share</button>
+          </div>
+        </div>
+
+        <div class="library-item">
+          <div class="library-item-info">
+            <div class="library-item-title">Product Strategy 2026.pdf<span class="library-item-badge-old">Shared by Sarah</span></div>
+            <div class="library-item-meta">Text extracted · <span class="library-item-ws">in workspace</span></div>
+          </div>
+          <div class="library-item-actions">
+            <button class="share-btn-old">Share</button>
+          </div>
+        </div>
+
+        <div class="library-item">
+          <div class="library-item-info">
+            <div class="library-item-title">Meeting Notes - Design Review.md</div>
+            <div class="library-item-meta">Text extracted · <span class="library-item-ws lib-only">library only</span></div>
+          </div>
+          <div class="library-item-actions">
+            <button class="share-btn-old">Share</button>
+          </div>
+        </div>
+
+        <div class="library-item">
+          <div class="library-item-info">
+            <div class="library-item-title">Competitor Analysis.docx<span class="library-item-badge-old">Shared by James</span></div>
+            <div class="library-item-meta">No text · <span class="library-item-ws lib-only">library only</span></div>
+          </div>
+          <div class="library-item-actions">
+            <button class="share-btn-old">Share</button>
+          </div>
+        </div>
+
+        <div class="callout problem">⚠ Blue badges (#e0f2fe / #0369a1) clash with warm color palette</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ════════ AFTER ════════ -->
+  <div class="mockup-col">
+    <div class="mockup-label after">After — Matching App Patterns</div>
+    <div class="mockup-frame">
+      <div class="page">
+        <div class="ws-nav">
+          <button class="back-btn">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
+            Back
+          </button>
+          <h2 class="ws-name">My Library</h2>
+        </div>
+
+        <!-- Properly styled tabs (matching .tab pattern) -->
+        <div class="tabs-row">
+          <button class="tab-btn active">Documents</button>
+          <button class="tab-btn">Meetings</button>
+          <button class="tab-btn">Research</button>
+        </div>
+
+        <div class="callout">✓ Tabs use .tab pattern — JetBrains Mono, uppercase, accent underline</div>
+
+        <!-- Toolbar with proper classes -->
+        <div class="library-toolbar">
+          <button class="accent-btn" style="display:flex;align-items:center;gap:0.4rem">
+            <svg viewBox="0 0 87.3 78" width="16" height="14"><path d="M6.6 66.85l3.85 6.65c.8 1.4 1.95 2.5 3.3 3.3L29.15 49.7H0c0 1.55.4 3.1 1.2 4.5z" fill="#0066DA"/><path d="M43.65 25.15L29.15 0c-1.35.8-2.5 1.9-3.3 3.3L1.2 44.2c-.8 1.4-1.2 2.95-1.2 4.5h29.15z" fill="#00AC47"/><path d="M43.65 25.15L58.15 0H29.15c-1.55 0-3.1.4-4.5 1.2L43.65 25.15z" fill="#EA4335"/></svg>
+            Google Drive
+          </button>
+          <button class="accent-btn">Upload Document</button>
+        </div>
+
+        <!-- Document cards — matching meeting-card pattern -->
+        <div class="library-card">
+          <div class="lc-info">
+            <div class="lc-title">Q4 Budget Report.xlsx</div>
+            <div class="lc-meta">Text extracted · in workspace</div>
+          </div>
+          <div class="lc-actions">
+            <button class="lc-share-btn">Share</button>
+          </div>
+        </div>
+
+        <div class="library-card">
+          <div class="lc-info">
+            <div class="lc-title">Product Strategy 2026.pdf<span class="lc-shared-badge">Shared by Sarah</span></div>
+            <div class="lc-meta">Text extracted · in workspace</div>
+          </div>
+          <div class="lc-actions">
+            <button class="lc-share-btn">Share</button>
+          </div>
+        </div>
+
+        <div class="library-card">
+          <div class="lc-info">
+            <div class="lc-title">Meeting Notes - Design Review.md</div>
+            <div class="lc-meta">Text extracted · <span style="color:var(--accent)">library only</span></div>
+          </div>
+          <div class="lc-actions">
+            <button class="lc-share-btn">Share</button>
+          </div>
+        </div>
+
+        <div class="library-card">
+          <div class="lc-info">
+            <div class="lc-title">Competitor Analysis.docx<span class="lc-shared-badge">Shared by James</span></div>
+            <div class="lc-meta">No text · <span style="color:var(--accent)">library only</span></div>
+          </div>
+          <div class="lc-actions">
+            <button class="lc-share-btn">Share</button>
+          </div>
+        </div>
+
+        <div class="callout">✓ Cards use .library-card — same bg, border, radius, hover as .meeting-card</div>
+        <div class="callout">✓ Shared badges use warm palette (--accent / --accent-dim) not blue</div>
+
+        <!-- ── Meetings tab preview ── -->
+        <div class="ref-section">
+          <div class="ref-label">Meetings Tab Preview</div>
+
+          <div class="library-card">
+            <div class="lc-info">
+              <div class="lc-title">Sprint Planning — Week 12</div>
+              <div class="lc-meta">Mar 20, 2026</div>
+            </div>
+            <div class="lc-actions">
+              <button class="lc-share-btn">Share</button>
+            </div>
+          </div>
+
+          <div class="library-card">
+            <div class="lc-info">
+              <div class="lc-title">Client Onboarding Call<span class="lc-shared-badge">Shared by Alex</span></div>
+              <div class="lc-meta">Mar 18, 2026</div>
+            </div>
+            <div class="lc-actions">
+              <button class="lc-share-btn">Share</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- ── Research tab preview ── -->
+        <div class="ref-section">
+          <div class="ref-label">Research Tab Preview</div>
+
+          <div class="library-card">
+            <div class="lc-info">
+              <div class="lc-title">Market Expansion Opportunities</div>
+              <div class="lc-meta">deep · Mar 22, 2026</div>
+            </div>
+            <div class="lc-actions">
+              <button class="lc-share-btn">Share</button>
+            </div>
+          </div>
+
+          <div class="library-card">
+            <div class="lc-info">
+              <div class="lc-title">Competitor Pricing Analysis<span class="lc-shared-badge">Shared by Maria</span></div>
+              <div class="lc-meta">quick · Mar 19, 2026</div>
+            </div>
+            <div class="lc-actions">
+              <button class="lc-share-btn">Share</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- ── Reference: actual meeting-card for comparison ── -->
+        <div class="ref-section">
+          <div class="ref-label">Reference — Meeting Card (existing pattern)</div>
+          <div class="meeting-card">
+            <div class="mc-title">Sprint Planning — Week 12</div>
+            <div class="mc-meta">Mar 20, 2026 · 45 min</div>
+            <div class="mc-summary">Discussed Q2 roadmap priorities, assigned sprint tasks, reviewed velocity metrics from last iteration.</div>
+          </div>
+          <div class="callout">✓ .library-card matches .meeting-card: same background, border, radius, padding, hover effect</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+</body>
+</html>

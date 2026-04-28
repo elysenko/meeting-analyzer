@@ -34,7 +34,6 @@ RUN python -c "from fastembed import TextEmbedding; TextEmbedding(model_name='BA
 
 COPY models.py db_schema.py llm.py document_processing.py canvas_client.py ./
 COPY static/ static/
-COPY main_patched.py main.py
 COPY main_live.py main_live.py
 
 # Non-root user
