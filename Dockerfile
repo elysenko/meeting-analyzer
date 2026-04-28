@@ -36,6 +36,8 @@ COPY models.py db_schema.py llm.py document_processing.py canvas_client.py ./
 COPY config.py dependencies.py middleware.py ./
 COPY core/ core/
 COPY static/ static/
+COPY services/ services/
+COPY routers/ routers/
 COPY main_live.py main_live.py
 
 # Non-root user

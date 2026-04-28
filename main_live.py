@@ -15895,3 +15895,23 @@ async def ws_transcribe(ws: WebSocket):
     finally:
         if whisper_ws:
             await whisper_ws.close()
+
+
+# ---------------------------------------------------------------------------
+# Router registration — vertical slice refactor (E9).
+# Routers are placed at the END so that, during the transition, the @app.xxx
+# declarations above continue to win on duplicate paths (first-match-wins in
+# Starlette's route table).  Once a router's @app decorators are removed from
+# main_live.py, the router version becomes the live handler automatically.
+# ---------------------------------------------------------------------------
+from routers.chat import router as _chat_router          # noqa: E402
+from routers.generate import router as _generate_router  # noqa: E402
+from routers.integrations import router as _integrations_router  # noqa: E402
+from routers.live import router as _live_router          # noqa: E402
+from routers.research import router as _research_router  # noqa: E402
+
+app.include_router(_chat_router)
+app.include_router(_generate_router)
+app.include_router(_integrations_router)
+app.include_router(_live_router)
+app.include_router(_research_router)
