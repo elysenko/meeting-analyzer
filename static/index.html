@@ -3849,6 +3849,14 @@ const recUploadStatusEl = document.getElementById('recUploadStatus');
 const recUploadTitleEl = document.getElementById('recUploadTitle');
 const recUploadHintEl = document.getElementById('recUploadHint');
 const recUploadQueueListEl = document.getElementById('recUploadQueueList');
+const generateTaskStatusEl = generateTaskStatusEl;
+const generateTaskBodyEl = generateTaskBodyEl;
+const chatInputEl = chatInputEl;
+const chatMessagesEl = chatMessagesEl;
+const researchTopicInputEl = researchTopicInputEl;
+const researchModeSelectEl = researchModeSelectEl;
+const livePipelineEl = livePipelineEl;
+const folderBreadcrumbEl = folderBreadcrumbEl;
 const DEFAULT_UPLOAD_TITLE = 'Drop a recording here';
 const DEFAULT_UPLOAD_HINT = 'MP4, M4A, or MP3 · or click to browse';
 
@@ -4161,7 +4169,7 @@ async function sendBrowserNotification(title, body) {
 }
 
 function setGenerateTaskStatus(text, running) {
-  const status = document.getElementById('generateTaskStatus');
+  const status = generateTaskStatusEl;
   if (!status) return;
   status.textContent = text;
   if (running !== undefined) status.classList.toggle('running', !!running);
@@ -4368,9 +4376,9 @@ async function applyGlobalDefaults(scope) {
 
 function currentResearchSignature() {
   return [
-    document.getElementById('researchModeSelect').value || 'quick',
+    researchModeSelectEl.value || 'quick',
     document.getElementById('researchTypeSelect').value || 'general',
-    document.getElementById('researchTopicInput').value.trim()
+    researchTopicInputEl.value.trim()
   ].join('|');
 }
 
@@ -5361,7 +5369,7 @@ function restoreContextSelection(session) {
 
 /* Scroll chat messages to bottom */
 function scrollChatToBottom(smooth) {
-  var el = document.getElementById('chatMessages');
+  var el = chatMessagesEl;
   if (el) el.scrollTo({ top: el.scrollHeight, behavior: smooth ? 'smooth' : 'auto' });
 }
 
@@ -5488,7 +5496,7 @@ function storeChatSessionId(workspaceId, sessionId) {
 }
 
 function restoreChatDraft() {
-  const input = document.getElementById('chatInput');
+  const input = chatInputEl;
   if (!input) return;
   if (!currentWorkspaceId || !currentChatSessionId) {
     input.value = '';
@@ -5498,7 +5506,7 @@ function restoreChatDraft() {
 }
 
 function resetChatThread() {
-  const container = document.getElementById('chatMessages');
+  const container = chatMessagesEl;
   if (!container) return;
   currentChatMessages = [];
   container.innerHTML = chatEmptyStateMarkup();
@@ -5555,7 +5563,7 @@ function _buildChatMessageElement(message) {
 
 /* Render a single message and scroll — used for live/incoming messages. */
 function renderChatMessagePayload(message) {
-  const container = document.getElementById('chatMessages');
+  const container = chatMessagesEl;
   if (!container || !message) return null;
   const emptyEl = container.querySelector('.chat-empty');
   if (emptyEl) emptyEl.remove();
@@ -5570,7 +5578,7 @@ function renderChatMessagePayload(message) {
    Used when loading a session — appends all elements via DocumentFragment,
    removes the empty-state placeholder once, and scrolls once at the end. */
 function renderChatMessageBatch(messages) {
-  const container = document.getElementById('chatMessages');
+  const container = chatMessagesEl;
   if (!container) return;
   const emptyEl = container.querySelector('.chat-empty');
   if (emptyEl) emptyEl.remove();
@@ -5585,7 +5593,7 @@ function renderChatMessageBatch(messages) {
 }
 
 function setChatComposeWarning(message) {
-  const container = document.getElementById('chatMessages');
+  const container = chatMessagesEl;
   if (!container) return;
   let warningEl = container.querySelector('[data-chat-warning-kind="compose"]');
   if (!message) {
@@ -5775,7 +5783,7 @@ async function createChatSession(options) {
   restoreChatDraft();
   setChatHistoryStatus(opts.quiet ? chatSessionSavedStatus() : ('New chat ready. ' + chatSessionSavedStatus()));
   syncChatControlState();
-  const input = document.getElementById('chatInput');
+  const input = chatInputEl;
   if (input && !opts.skipFocus) input.focus();
   return session;
 }
@@ -5845,7 +5853,7 @@ function syncResearchInputStatusDefault(force) {
   const el = document.getElementById('researchInputStatus');
   if (!el) return;
   if (!force && el.textContent.trim()) return;
-  const mode = document.getElementById('researchModeSelect').value || 'quick';
+  const mode = researchModeSelectEl.value || 'quick';
   if (mode === 'deep') {
     if (researchRefinementPlan && researchRefinementSignature === currentResearchSignature()) {
       el.textContent = 'Answer the inline follow-up questions, then send again to launch deep research.';
@@ -5988,7 +5996,7 @@ function renderResearchDraftThread(draft) {
 }
 
 function updateResearchComposerState() {
-  const input = document.getElementById('researchTopicInput');
+  const input = researchTopicInputEl;
   const btn = document.getElementById('researchStartBtn');
   if (btn && input) btn.disabled = !input.value.trim();
 }
@@ -5996,9 +6004,9 @@ function updateResearchComposerState() {
 function saveResearchDraft() {
   if (!currentWorkspaceId) return;
   const draft = {
-    mode: document.getElementById('researchModeSelect').value || 'quick',
+    mode: researchModeSelectEl.value || 'quick',
     research_type: document.getElementById('researchTypeSelect').value || 'general',
-    topic: document.getElementById('researchTopicInput').value || '',
+    topic: researchTopicInputEl.value || '',
     refinement_plan: researchRefinementPlan,
     refinement_signature: researchRefinementSignature,
     refinement_state: captureRefinementDraftState('researchRefinePanel', {
@@ -6023,8 +6031,8 @@ function restoreResearchDraft() {
   const draft = readStoredJSON(researchDraftStorageKey(currentWorkspaceId));
   if (!draft) {
     resetResearchRefinement();
-    document.getElementById('researchTopicInput').value = '';
-    document.getElementById('researchModeSelect').value = 'quick';
+    researchTopicInputEl.value = '';
+    researchModeSelectEl.value = 'quick';
     document.getElementById('researchTypeSelect').value = 'general';
     resetResearchThread();
     syncResearchInputStatusDefault(true);
@@ -6032,9 +6040,9 @@ function restoreResearchDraft() {
     updateTaskHints();
     return;
   }
-  document.getElementById('researchModeSelect').value = draft.mode || 'quick';
+  researchModeSelectEl.value = draft.mode || 'quick';
   document.getElementById('researchTypeSelect').value = draft.research_type || 'general';
-  document.getElementById('researchTopicInput').value = draft.topic || '';
+  researchTopicInputEl.value = draft.topic || '';
   researchRefinementPlan = draft.refinement_plan || null;
   researchRefinementSignature = draft.refinement_signature || currentResearchSignature();
   renderResearchDraftThread(draft);
@@ -6634,12 +6642,12 @@ async function openWorkspace(id, name, isShared) {
   document.getElementById('generateActions').style.display = 'none';
   document.getElementById('generateTaskEmpty').style.display = '';
   document.getElementById('generateTaskWorkspace').style.display = 'none';
-  document.getElementById('generateTaskBody').innerHTML = '';
-  document.getElementById('generateTaskStatus').textContent = 'Choose a task session to begin.';
+  generateTaskBodyEl.innerHTML = '';
+  generateTaskStatusEl.textContent = 'Choose a task session to begin.';
   document.getElementById('genTaskSessionList').innerHTML = '';
   document.getElementById('genTodoPicker').innerHTML = '';
   document.getElementById('todoStatus').textContent = '';
-  document.getElementById('chatInput').value = '';
+  chatInputEl.value = '';
   currentResearchId = null;
   resetTodoComposer();
   let researchModelLoadError = '';
@@ -7081,7 +7089,7 @@ function closeGlobalSettings() {
 
 /* --- Landing --- */
 function buildFolderBreadcrumb() {
-  const bc = document.getElementById('folderBreadcrumb');
+  const bc = folderBreadcrumbEl;
   if (!currentFolderId) { bc.style.display = 'none'; return; }
   const crumbs = [];
   let fid = currentFolderId;
@@ -7266,7 +7274,7 @@ document.getElementById('wsGrid').addEventListener('click', function(e) {
 });
 
 /* Breadcrumb navigation */
-document.getElementById('folderBreadcrumb').addEventListener('click', function(e) {
+folderBreadcrumbEl.addEventListener('click', function(e) {
   const nav = e.target.closest('[data-folder-nav]');
   if (!nav) return;
   const target = nav.dataset.folderNav;
@@ -7277,7 +7285,7 @@ document.getElementById('folderBreadcrumb').addEventListener('click', function(e
 
 /* Breadcrumb drop target (move workspace or folder to parent/root) */
 var _bcDragCounters = {};
-document.getElementById('folderBreadcrumb').addEventListener('dragenter', function(e) {
+folderBreadcrumbEl.addEventListener('dragenter', function(e) {
   e.preventDefault();
   var link = e.target.closest('[data-folder-nav]');
   if (!link) return;
@@ -7286,10 +7294,10 @@ document.getElementById('folderBreadcrumb').addEventListener('dragenter', functi
   this.querySelectorAll('[data-folder-nav]').forEach(function(a) { if (a !== link) { a.classList.remove('drag-over'); _bcDragCounters[a.dataset.folderNav] = 0; } });
   link.classList.add('drag-over');
 });
-document.getElementById('folderBreadcrumb').addEventListener('dragover', function(e) {
+folderBreadcrumbEl.addEventListener('dragover', function(e) {
   e.preventDefault(); e.dataTransfer.dropEffect = 'move';
 });
-document.getElementById('folderBreadcrumb').addEventListener('dragleave', function(e) {
+folderBreadcrumbEl.addEventListener('dragleave', function(e) {
   var link = e.target.closest('[data-folder-nav]');
   if (!link) {
     if (!this.contains(e.relatedTarget)) { this.querySelectorAll('[data-folder-nav]').forEach(function(a) { a.classList.remove('drag-over'); }); _bcDragCounters = {}; }
@@ -7299,7 +7307,7 @@ document.getElementById('folderBreadcrumb').addEventListener('dragleave', functi
   _bcDragCounters[key] = (_bcDragCounters[key] || 0) - 1;
   if (_bcDragCounters[key] <= 0) { _bcDragCounters[key] = 0; link.classList.remove('drag-over'); }
 });
-document.getElementById('folderBreadcrumb').addEventListener('drop', function(e) {
+folderBreadcrumbEl.addEventListener('drop', function(e) {
   e.preventDefault();
   this.querySelectorAll('[data-folder-nav]').forEach(function(a) { a.classList.remove('drag-over'); });
   var data = e.dataTransfer.getData('text/plain');
@@ -7954,10 +7962,10 @@ function invalidateGenerateResearchRefinement() {
   saveGenerateResearchDraft();
 }
 
-document.getElementById('researchModeSelect').addEventListener('change', invalidateResearchRefinement);
+researchModeSelectEl.addEventListener('change', invalidateResearchRefinement);
 document.getElementById('researchTypeSelect').addEventListener('change', invalidateResearchRefinement);
-document.getElementById('researchTopicInput').addEventListener('input', invalidateResearchRefinement);
-document.getElementById('researchTopicInput').addEventListener('keydown', function(e) {
+researchTopicInputEl.addEventListener('input', invalidateResearchRefinement);
+researchTopicInputEl.addEventListener('keydown', function(e) {
   if (e.key === 'Enter' && !e.shiftKey) {
     e.preventDefault();
     startResearch();
@@ -9608,13 +9616,13 @@ async function sendQuestionChatMessage(questionKey) {
       }
     }
     var statusText = payload.assistant_message || 'Done.';
-    document.getElementById('generateTaskStatus').textContent = statusText;
+    generateTaskStatusEl.textContent = statusText;
     finishGenerateTaskAction(statusText);
   } catch (err) {
     var thinkingOnErr = document.querySelector('[data-qchat-thinking="' + questionKey + '"]');
     if (thinkingOnErr) thinkingOnErr.remove();
     if (controller.signal.aborted) {
-      document.getElementById('generateTaskStatus').textContent = 'Chat cancelled.';
+      generateTaskStatusEl.textContent = 'Chat cancelled.';
       clearGenerateTaskActionActivity();
       return;
     }
@@ -9712,8 +9720,8 @@ function renderQuestionPlan(plan, answers, questionResearch, answerEvidence, edi
 function renderGenerateTaskWorkspace() {
   const empty = document.getElementById('generateTaskEmpty');
   const workspace = document.getElementById('generateTaskWorkspace');
-  const body = document.getElementById('generateTaskBody');
-  const status = document.getElementById('generateTaskStatus');
+  const body = generateTaskBodyEl;
+  const status = generateTaskStatusEl;
   if (!currentGenerateTask) {
     empty.style.display = '';
     workspace.style.display = 'none';
@@ -9886,7 +9894,7 @@ function renderGenerateTaskWorkspace() {
     if (isEditable && !hasHistory) {
       runGenerateResearch('quick').catch(function(err) {
         addTemplateChatBubble('assistant', 'Research failed: ' + err.message + ' — refresh or try again.');
-        document.getElementById('generateTaskStatus').textContent = err.message;
+        generateTaskStatusEl.textContent = err.message;
       });
     }
   } else if (step === 'intake') {
@@ -10123,7 +10131,7 @@ async function startGenerateTaskFromTodo(todoId, options) {
 }
 
 async function resetGenerateTaskStep(step) {
-  document.getElementById('generateTaskStatus').textContent = 'Resetting...';
+  generateTaskStatusEl.textContent = 'Resetting...';
   const resp = await fetch('/workspaces/' + currentWorkspaceId + '/generate/tasks/' + currentGenerateTaskId + '/reset-step', {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
@@ -10399,7 +10407,7 @@ async function runGenerateResearch(mode) {
     showGenerateHistoricalRunMessage('run research');
     return;
   }
-  document.getElementById('generateTaskStatus').textContent = 'Running research...';
+  generateTaskStatusEl.textContent = 'Running research...';
   setStatusStripRunning('generateTaskStatus', true);
   const composerEl = document.getElementById('generateTemplateChatComposer');
   const chatThread = document.getElementById('generateTemplateChatThread');
@@ -10453,7 +10461,7 @@ async function runGenerateResearch(mode) {
         const msg = JSON.parse(lines[i]);
         if (msg.research_id) updateResearchActivity({ sessionId: msg.research_id });
         if (msg.status) {
-          document.getElementById('generateTaskStatus').textContent = msg.status;
+          generateTaskStatusEl.textContent = msg.status;
           if (statusBubble) statusBubble.querySelector('.msg-content').textContent = msg.status;
           if (researchProgressEl) researchProgressEl.querySelector('.research-progress-status').textContent = msg.status;
           updateResearchActivity({ status: msg.status });
@@ -10489,7 +10497,7 @@ async function runGenerateResearch(mode) {
       status: 'Research complete',
       error: ''
     });
-    document.getElementById('generateTaskStatus').textContent = 'Outline draft ready. Refine it or click Approve Outline.';
+    generateTaskStatusEl.textContent = 'Outline draft ready. Refine it or click Approve Outline.';
     if (shouldNotifyResearchCompletion()) {
       sendBrowserNotification('Research complete', 'Your outline draft is ready to review.');
     }
@@ -10561,7 +10569,7 @@ async function buildTaskQuestions() {
     return;
   }
   beginGenerateTaskAction('Build Guided Questions', 'Building guided questions...');
-  document.getElementById('generateTaskStatus').textContent = 'Building guided questions...';
+  generateTaskStatusEl.textContent = 'Building guided questions...';
   try {
     const resp = await fetch('/workspaces/' + currentWorkspaceId + '/generate/tasks/' + currentGenerateTaskId + '/questions', {
       method: 'POST'
@@ -10578,7 +10586,7 @@ async function buildTaskQuestions() {
     const successText = Object.keys(payload.autofill_answers || {}).length
       ? 'Intake rebuilt from the current grounding research.'
       : 'Questions rebuilt from the current grounding research.';
-    document.getElementById('generateTaskStatus').textContent = successText;
+    generateTaskStatusEl.textContent = successText;
     finishGenerateTaskAction(successText);
   } catch (err) {
     failGenerateTaskAction(err.message);
@@ -10592,7 +10600,7 @@ async function autofillTaskAnswers() {
     return;
   }
   beginGenerateTaskAction('Autofill Intake Answers', 'Drafting best-guess answers...');
-  document.getElementById('generateTaskStatus').textContent = 'Drafting best-guess answers...';
+  generateTaskStatusEl.textContent = 'Drafting best-guess answers...';
   try {
     const resp = await fetch('/workspaces/' + currentWorkspaceId + '/generate/tasks/' + currentGenerateTaskId + '/answers/autofill', {
       method: 'POST',
@@ -10612,7 +10620,7 @@ async function autofillTaskAnswers() {
     const successText = autofilledCount
       ? ('Added best guesses for ' + autofilledCount + ' question' + (autofilledCount === 1 ? '' : 's') + '.')
       : 'No additional best guesses were available from the current context.';
-    document.getElementById('generateTaskStatus').textContent = successText;
+    generateTaskStatusEl.textContent = successText;
     finishGenerateTaskAction(successText);
   } catch (err) {
     failGenerateTaskAction(err.message);
@@ -10628,7 +10636,7 @@ async function autofillSingleTaskAnswer(questionKey) {
   const questionLabel = currentTaskQuestionLabel(questionKey);
   const guidance = currentTaskQuestionGuidance(questionKey);
   beginGenerateTaskAction('Refresh Best Guess', 'Refreshing best guess for ' + questionLabel + '...');
-  document.getElementById('generateTaskStatus').textContent = 'Refreshing best guess from research and documents...';
+  generateTaskStatusEl.textContent = 'Refreshing best guess from research and documents...';
   const controller = startQuestionActivity(questionKey, 'autofill', 'Refreshing best guess...');
   try {
     async function send(overwriteManual) {
@@ -10650,7 +10658,7 @@ async function autofillSingleTaskAnswer(questionKey) {
       const shouldOverwrite = window.confirm((conflict.message || ('Overwrite the manual answer for ' + questionLabel + '?')) + '\\n\\nChoose OK to replace it with a refreshed best guess.');
       if (!shouldOverwrite) {
         const preservedText = 'Manual answer preserved. Refresh skipped.';
-        document.getElementById('generateTaskStatus').textContent = preservedText;
+        generateTaskStatusEl.textContent = preservedText;
         finishGenerateTaskAction(preservedText);
         return;
       }
@@ -10663,11 +10671,11 @@ async function autofillSingleTaskAnswer(questionKey) {
     const successText = Object.keys(payload.answers || {}).length
       ? 'Best guess refreshed from current research/documents.'
       : 'No stronger document-backed answer was available.';
-    document.getElementById('generateTaskStatus').textContent = successText;
+    generateTaskStatusEl.textContent = successText;
     finishGenerateTaskAction(successText);
   } catch (err) {
     if (controller.signal.aborted) {
-      document.getElementById('generateTaskStatus').textContent = 'Best-guess refresh cancelled.';
+      generateTaskStatusEl.textContent = 'Best-guess refresh cancelled.';
       clearGenerateTaskActionActivity();
       return;
     }
@@ -10686,7 +10694,7 @@ async function runTaskQuestionResearch(questionKey) {
   const questionLabel = currentTaskQuestionLabel(questionKey);
   const guidance = currentTaskQuestionGuidance(questionKey);
   beginGenerateTaskAction('Quick Research', 'Running quick research for ' + questionLabel + '...');
-  document.getElementById('generateTaskStatus').textContent = 'Running quick research for this question...';
+  generateTaskStatusEl.textContent = 'Running quick research for this question...';
   const controller = startQuestionActivity(questionKey, 'research', 'Quick research running...');
   let finalResult = null;
   try {
@@ -10713,12 +10721,12 @@ async function runTaskQuestionResearch(questionKey) {
         if (!lines[i].trim()) continue;
         const msg = JSON.parse(lines[i]);
         if (msg.status) {
-          document.getElementById('generateTaskStatus').textContent = msg.status;
+          generateTaskStatusEl.textContent = msg.status;
           updateQuestionActivityStatus(questionKey, msg.status);
           updateGenerateTaskActionActivity({ status: msg.status });
         }
         if (msg.warning) {
-          document.getElementById('generateTaskStatus').textContent = msg.warning;
+          generateTaskStatusEl.textContent = msg.warning;
           updateGenerateTaskActionActivity({ status: msg.warning });
         }
         if (msg.result) finalResult = msg.result;
@@ -10727,7 +10735,7 @@ async function runTaskQuestionResearch(questionKey) {
     }
   } catch (err) {
     if (controller.signal.aborted) {
-      document.getElementById('generateTaskStatus').textContent = 'Question research cancelled.';
+      generateTaskStatusEl.textContent = 'Question research cancelled.';
       clearGenerateTaskActionActivity();
       return;
     }
@@ -10755,7 +10763,7 @@ async function runTaskQuestionResearch(questionKey) {
     : ((finalResult && finalResult.conflicts && finalResult.conflicts.length)
       ? 'Question research saved. Manual answer preserved.'
       : 'Question research saved to the Research tab.');
-  document.getElementById('generateTaskStatus').textContent = successText;
+  generateTaskStatusEl.textContent = successText;
   finishGenerateTaskAction(successText);
 }
 
@@ -10768,7 +10776,7 @@ async function generateDeliverableFromTask() {
   var genIndicator = document.getElementById('generateDeliverableIndicator');
   if (genBtn) { genBtn.disabled = true; genBtn.textContent = 'Generating...'; }
   if (genIndicator) { genIndicator.style.display = ''; genIndicator.textContent = 'Starting generation...'; }
-  document.getElementById('generateTaskStatus').textContent = 'Generating deliverable... please wait.';
+  generateTaskStatusEl.textContent = 'Generating deliverable... please wait.';
   beginGenerateTaskAction('Generate Deliverable', 'Generating deliverable...');
   try {
     const resp = await fetch('/workspaces/' + currentWorkspaceId + '/generate/tasks/' + currentGenerateTaskId + '/deliverable', {
@@ -10794,10 +10802,10 @@ async function generateDeliverableFromTask() {
         if (!lines[i].trim()) continue;
         const msg = JSON.parse(lines[i]);
         if (msg.status) {
-          document.getElementById('generateTaskStatus').textContent = msg.status;
+          generateTaskStatusEl.textContent = msg.status;
           if (genIndicator) genIndicator.textContent = msg.status;
         }
-        if (msg.warning) document.getElementById('generateTaskStatus').textContent = msg.warning;
+        if (msg.warning) generateTaskStatusEl.textContent = msg.warning;
         if (msg.result) finalResult = msg.result;
         if (msg.error) throw new Error(msg.error);
       }
@@ -10805,7 +10813,7 @@ async function generateDeliverableFromTask() {
     if (!finalResult) throw new Error('No deliverable result returned.');
     var filename = finalResult.document ? finalResult.document.filename : 'deliverable';
     var docId = finalResult.document ? finalResult.document.id : null;
-    document.getElementById('generateTaskStatus').textContent = 'Generated ' + filename;
+    generateTaskStatusEl.textContent = 'Generated ' + filename;
     if (typeof sendBrowserNotification === 'function') sendBrowserNotification('Deliverable Ready', filename + ' has been generated.');
     await Promise.all([
       loadDocuments().catch(function() {}),
@@ -10827,7 +10835,7 @@ async function generateDeliverableFromTask() {
     finishGenerateTaskAction('Deliverable generated: ' + filename);
   } catch (genErr) {
     var errMsg = genErr && genErr.message ? genErr.message : 'Generation failed.';
-    document.getElementById('generateTaskStatus').textContent = 'Error: ' + errMsg;
+    generateTaskStatusEl.textContent = 'Error: ' + errMsg;
     failGenerateTaskAction(errMsg);
     if (genIndicator) genIndicator.textContent = 'Error: ' + errMsg;
     throw genErr;
@@ -10853,7 +10861,7 @@ async function loadGenerateWorkspace() {
       renderGenerateTaskWorkspace();
     }
   } catch (err) {
-    document.getElementById('generateTaskStatus').textContent = 'Failed to load generate workspace: ' + err.message;
+    generateTaskStatusEl.textContent = 'Failed to load generate workspace: ' + err.message;
   }
 }
 
@@ -10861,7 +10869,7 @@ document.getElementById('genTodoPicker').addEventListener('change', function(e) 
   const select = e.target.closest('[data-todo-status]');
   if (!select) return;
   saveTodoStatus(select.dataset.todoStatus, select.value, select).catch(function(err) {
-    document.getElementById('generateTaskStatus').textContent = err.message;
+    generateTaskStatusEl.textContent = err.message;
   });
 });
 
@@ -10869,7 +10877,7 @@ document.getElementById('genTodoPicker').addEventListener('click', function(e) {
   const resumeBtn = e.target.closest('[data-open-generate-session]');
   if (resumeBtn) {
     openGenerateTask(parseInt(resumeBtn.dataset.openGenerateSession, 10)).catch(function(err) {
-      document.getElementById('generateTaskStatus').textContent = err.message;
+      generateTaskStatusEl.textContent = err.message;
     });
     return;
   }
@@ -10885,14 +10893,14 @@ document.getElementById('genTodoPicker').addEventListener('click', function(e) {
       resetSetup: true,
       artifactTemplate: session && session.artifact_template ? session.artifact_template : 'requirements'
     }).catch(function(err) {
-      document.getElementById('generateTaskStatus').textContent = err.message;
+      generateTaskStatusEl.textContent = err.message;
     });
     return;
   }
   const closeBtn = e.target.closest('[data-close-generate-todo]');
   if (closeBtn) {
     saveTodoStatus(closeBtn.dataset.closeGenerateTodo, 'complete', closeBtn).catch(function(err) {
-      document.getElementById('generateTaskStatus').textContent = err.message;
+      generateTaskStatusEl.textContent = err.message;
     });
     return;
   }
@@ -10904,7 +10912,7 @@ document.getElementById('genTodoPicker').addEventListener('click', function(e) {
   const btn = e.target.closest('[data-open-generate]');
   if (btn) {
     startGenerateTaskFromTodo(btn.dataset.openGenerate).catch(function(err) {
-      document.getElementById('generateTaskStatus').textContent = err.message;
+      generateTaskStatusEl.textContent = err.message;
     });
     return;
   }
@@ -10916,14 +10924,14 @@ document.getElementById('genTaskSessionList').addEventListener('click', function
   if (deleteBtn) {
     e.stopPropagation();
     deleteGenerateTask(deleteBtn.dataset.deleteGenerateSession).catch(function(err) {
-      document.getElementById('generateTaskStatus').textContent = err.message;
+      generateTaskStatusEl.textContent = err.message;
     });
     return;
   }
   const card = e.target.closest('[data-open-generate-session]');
   if (!card) return;
   openGenerateTask(parseInt(card.dataset.openGenerateSession, 10)).catch(function(err) {
-    document.getElementById('generateTaskStatus').textContent = err.message;
+    generateTaskStatusEl.textContent = err.message;
   });
 });
 
@@ -10942,11 +10950,11 @@ document.getElementById('generateWizardSteps').addEventListener('click', functio
   saveGenerateTask(update, displayedStep === 'setup' ? 'Saving configuration...' : null, {
     syncSetupSignature: displayedStep === 'setup'
   }).catch(function(err) {
-    document.getElementById('generateTaskStatus').textContent = err.message;
+    generateTaskStatusEl.textContent = err.message;
   });
 });
 
-document.getElementById('generateTaskBody').addEventListener('click', function(e) {
+generateTaskBodyEl.addEventListener('click', function(e) {
   const libraryToggle = e.target.closest('#generateResearchLibraryToggle');
   if (libraryToggle) {
     toggleGenerateResearchLibrary();
@@ -10955,14 +10963,14 @@ document.getElementById('generateTaskBody').addEventListener('click', function(e
   const templateChatSend = e.target.closest('#generateTemplateChatSend');
   if (templateChatSend) {
     sendTemplateRefineMessage().catch(function(err) {
-      document.getElementById('generateTaskStatus').textContent = err.message;
+      generateTaskStatusEl.textContent = err.message;
     });
     return;
   }
   const startTaskResearchBtn = e.target.closest('#generateResearchStartBtn');
   if (startTaskResearchBtn) {
     runGenerateResearch('quick').catch(function(err) {
-      document.getElementById('generateTaskStatus').textContent = err.message;
+      generateTaskStatusEl.textContent = err.message;
       setGenerateResearchInputStatus(err.message);
     });
     return;
@@ -10980,7 +10988,7 @@ document.getElementById('generateTaskBody').addEventListener('click', function(e
   const qchatSend = e.target.closest('[data-qchat-send]');
   if (qchatSend) {
     sendQuestionChatMessage(qchatSend.dataset.qchatSend).catch(function(err) {
-      document.getElementById('generateTaskStatus').textContent = err.message;
+      generateTaskStatusEl.textContent = err.message;
     });
     return;
   }
@@ -10997,7 +11005,7 @@ document.getElementById('generateTaskBody').addEventListener('click', function(e
   const questionSendBtn = e.target.closest('[data-gquestion-send]');
   if (questionSendBtn) {
     submitTaskQuestionComposer(questionSendBtn.dataset.gquestionSend, questionSendBtn.dataset.gquestionSendAction).catch(function(err) {
-      document.getElementById('generateTaskStatus').textContent = err.message;
+      generateTaskStatusEl.textContent = err.message;
     });
     return;
   }
@@ -11020,7 +11028,7 @@ document.getElementById('generateTaskBody').addEventListener('click', function(e
     saveGenerateTask(update, currentGenerateTask && displayedStep === 'setup' ? 'Saving configuration...' : null, {
       syncSetupSignature: currentGenerateTask && displayedStep === 'setup'
     }).catch(function(err) {
-      document.getElementById('generateTaskStatus').textContent = err.message;
+      generateTaskStatusEl.textContent = err.message;
     });
     return;
   }
@@ -11036,11 +11044,11 @@ document.getElementById('generateTaskBody').addEventListener('click', function(e
       resetGenerateTaskStep(step).then(function() {
         return buildTaskQuestions();
       }).catch(function(err) {
-        document.getElementById('generateTaskStatus').textContent = err.message;
+        generateTaskStatusEl.textContent = err.message;
       });
     } else {
       resetGenerateTaskStep(step).catch(function(err) {
-        document.getElementById('generateTaskStatus').textContent = err.message;
+        generateTaskStatusEl.textContent = err.message;
       });
     }
   } else if (type === 'save-setup') {
@@ -11051,16 +11059,16 @@ document.getElementById('generateTaskBody').addEventListener('click', function(e
       notifyOnError: true,
       notificationTitle: 'Generate setup saved'
     }).catch(function(err) {
-      document.getElementById('generateTaskStatus').textContent = err.message;
+      generateTaskStatusEl.textContent = err.message;
     });
   } else if (type === 'refresh-brand') {
     const website = document.getElementById('gBrandWebsite').value.trim();
     if (!website) {
-      document.getElementById('generateTaskStatus').textContent = 'Enter a website URL first.';
+      generateTaskStatusEl.textContent = 'Enter a website URL first.';
       return;
     }
     saveGenerateSetup('Saving configuration...', { force: true, successText: 'Configuration saved.' }).then(function() {
-      document.getElementById('generateTaskStatus').textContent = 'Pulling website branding...';
+      generateTaskStatusEl.textContent = 'Pulling website branding...';
       return fetch('/workspaces/' + currentWorkspaceId + '/generate/tasks/' + currentGenerateTaskId + '/brand/refresh', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
@@ -11075,27 +11083,27 @@ document.getElementById('generateTaskBody').addEventListener('click', function(e
       renderGenerateSessionList();
       renderGenerateTaskWorkspace();
     }).then(function() {
-      document.getElementById('generateTaskStatus').textContent = 'Branding updated from website.';
+      generateTaskStatusEl.textContent = 'Branding updated from website.';
     }).catch(function(err) {
-      document.getElementById('generateTaskStatus').textContent = err.message;
+      generateTaskStatusEl.textContent = err.message;
     });
   } else if (type === 'save-research-links') {
     saveGenerateTask({ related_research_ids: collectRelatedResearchIds() }, 'Saving research links...').catch(function(err) {
-      document.getElementById('generateTaskStatus').textContent = err.message;
+      generateTaskStatusEl.textContent = err.message;
     });
   } else if (type === 'run-quick-research' || type === 'run-deep-research') {
     runGenerateResearch(type === 'run-deep-research' ? 'deep' : 'quick').catch(function(err) {
-      document.getElementById('generateTaskStatus').textContent = err.message;
+      generateTaskStatusEl.textContent = err.message;
     });
   } else if (type === 'add-custom-section') {
     var heading = (document.getElementById('customSectionHeading') || {}).value || '';
     heading = heading.trim();
     if (!heading) {
-      document.getElementById('generateTaskStatus').textContent = 'Enter a section heading.';
+      generateTaskStatusEl.textContent = 'Enter a section heading.';
       return;
     }
     var content = (document.getElementById('customSectionContent') || {}).value || '';
-    document.getElementById('generateTaskStatus').textContent = 'Adding section and generating best guess...';
+    generateTaskStatusEl.textContent = 'Adding section and generating best guess...';
     fetch('/workspaces/' + currentWorkspaceId + '/generate/tasks/' + currentGenerateTaskId + '/sections', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
@@ -11108,30 +11116,30 @@ document.getElementById('generateTaskBody').addEventListener('click', function(e
       updateGenerateSessionCache(currentGenerateTask);
       renderGenerateSessionList();
       renderGenerateTaskWorkspace();
-      document.getElementById('generateTaskStatus').textContent = 'Section added' + (data.autofill_answer ? ' with best guess.' : '.');
+      generateTaskStatusEl.textContent = 'Section added' + (data.autofill_answer ? ' with best guess.' : '.');
     }).catch(function(err) {
-      document.getElementById('generateTaskStatus').textContent = err.message;
+      generateTaskStatusEl.textContent = err.message;
     });
   } else if (type === 'build-questions') {
     buildTaskQuestions().catch(function(err) {
-      document.getElementById('generateTaskStatus').textContent = err.message;
+      generateTaskStatusEl.textContent = err.message;
     });
   } else if (type === 'autofill-answers') {
     autofillTaskAnswers().catch(function(err) {
-      document.getElementById('generateTaskStatus').textContent = err.message;
+      generateTaskStatusEl.textContent = err.message;
     });
   } else if (type === 'save-answers') {
     saveGenerateTask({ answers: collectAnswers() }, 'Saving answers...').catch(function(err) {
-      document.getElementById('generateTaskStatus').textContent = err.message;
+      generateTaskStatusEl.textContent = err.message;
     });
   } else if (type === 'generate-deliverable') {
     generateDeliverableFromTask().catch(function(err) {
-      document.getElementById('generateTaskStatus').textContent = err.message;
+      generateTaskStatusEl.textContent = err.message;
     });
   }
 });
 
-document.getElementById('generateTaskBody').addEventListener('input', function(e) {
+generateTaskBodyEl.addEventListener('input', function(e) {
   if (!currentGenerateTask) return;
   if (e.target.closest('#generateResearchRefinePanel')) {
     if (!isEditableGenerateRun()) return;
@@ -11160,7 +11168,7 @@ document.getElementById('generateTaskBody').addEventListener('input', function(e
   }
 });
 
-document.getElementById('generateTaskBody').addEventListener('change', function(e) {
+generateTaskBodyEl.addEventListener('change', function(e) {
   if (!currentGenerateTask) return;
   if (e.target.closest('#generateResearchRefinePanel')) {
     if (!isEditableGenerateRun()) return;
@@ -11179,7 +11187,7 @@ document.getElementById('generateTaskBody').addEventListener('change', function(
     if (!isEditableGenerateRun()) return;
     invalidateGenerateResearchRefinement();
     saveGenerateTask({ related_research_ids: collectRelatedResearchIds() }, 'Saving research links...', { rerender: false }).catch(function(err) {
-      document.getElementById('generateTaskStatus').textContent = err.message;
+      generateTaskStatusEl.textContent = err.message;
     });
     return;
   }
@@ -11200,7 +11208,7 @@ document.getElementById('generateTaskBody').addEventListener('change', function(
   }
 });
 
-document.getElementById('generateTaskBody').addEventListener('keydown', function(e) {
+generateTaskBodyEl.addEventListener('keydown', function(e) {
   if (e.target.matches('[data-qchat-input]') && e.key === 'Enter' && !e.shiftKey) {
     e.preventDefault();
     if (!isEditableGenerateRun()) {
@@ -11208,14 +11216,14 @@ document.getElementById('generateTaskBody').addEventListener('keydown', function
       return;
     }
     sendQuestionChatMessage(e.target.dataset.qchatInput).catch(function(err) {
-      document.getElementById('generateTaskStatus').textContent = err.message;
+      generateTaskStatusEl.textContent = err.message;
     });
     return;
   }
   if (e.target.id === 'generateTemplateChatInput' && e.key === 'Enter' && !e.shiftKey) {
     e.preventDefault();
     sendTemplateRefineMessage().catch(function(err) {
-      document.getElementById('generateTaskStatus').textContent = err.message;
+      generateTaskStatusEl.textContent = err.message;
     });
     return;
   }
@@ -11226,7 +11234,7 @@ document.getElementById('generateTaskBody').addEventListener('keydown', function
       return;
     }
     runGenerateResearch('quick').catch(function(err) {
-      document.getElementById('generateTaskStatus').textContent = err.message;
+      generateTaskStatusEl.textContent = err.message;
       setGenerateResearchInputStatus(err.message);
     });
     return;
@@ -11241,7 +11249,7 @@ document.getElementById('generateTaskBody').addEventListener('keydown', function
       e.target.dataset.gquestionGuidance,
       activeTaskQuestionComposerAction(e.target.dataset.gquestionGuidance) || 'research'
     ).catch(function(err) {
-      document.getElementById('generateTaskStatus').textContent = err.message;
+      generateTaskStatusEl.textContent = err.message;
     });
   }
 });
@@ -12083,7 +12091,7 @@ function toggleChatFullscreen() {
   /* Re-wire input + send button to originals */
   var cloneInput = clone.querySelector('#chatInput');
   var cloneSendBtn = clone.querySelector('#chatSendBtn');
-  var originalInput = document.getElementById('chatInput');
+  var originalInput = chatInputEl;
   var originalSendBtn = document.getElementById('chatSendBtn');
 
   if (cloneInput && originalInput) {
@@ -12116,7 +12124,7 @@ function toggleChatFullscreen() {
   var cloneMsgs = clone.querySelector('.chat-messages');
   var syncInterval = setInterval(function() {
     if (!document.body.contains(overlay)) { clearInterval(syncInterval); return; }
-    var originalMsgs = document.getElementById('chatMessages');
+    var originalMsgs = chatMessagesEl;
     if (originalMsgs && cloneMsgs) {
       var prevCount = cloneMsgs.children.length;
       var newCount = originalMsgs.children.length;
@@ -12534,7 +12542,7 @@ document.getElementById('chatFileInput').addEventListener('change', async functi
   });
 })();
 
-document.getElementById('chatInput').addEventListener('paste', function(e) {
+chatInputEl.addEventListener('paste', function(e) {
   var items = e.clipboardData && e.clipboardData.items;
   if (!items) return;
   for (var i = 0; i < items.length; i++) {
@@ -12555,7 +12563,7 @@ document.getElementById('chatInput').addEventListener('paste', function(e) {
     }
   }
 });
-document.getElementById('chatInput').addEventListener('keydown', function(e) {
+chatInputEl.addEventListener('keydown', function(e) {
   if (e.key === 'Enter' && !e.shiftKey) {
     e.preventDefault();
     var modeEl = document.getElementById('chatModeSelect');
@@ -12563,7 +12571,7 @@ document.getElementById('chatInput').addEventListener('keydown', function(e) {
     if (mode === 'chat') { sendChat(); } else { startChatResearch(mode); }
   }
 });
-document.getElementById('chatInput').addEventListener('input', function() {
+chatInputEl.addEventListener('input', function() {
   if (!currentWorkspaceId || !currentChatSessionId) return;
   if (!this.value.trim()) {
     removeStoredJSON(chatDraftStorageKey(currentWorkspaceId, currentChatSessionId));
@@ -12593,7 +12601,7 @@ function chatRunnerStatusText(event) {
 async function sendChat() {
   if (!currentWorkspaceId) return;
   if (chatRequestActive()) return;
-  const input = document.getElementById('chatInput');
+  const input = chatInputEl;
   const draftText = input.value;
   const question = draftText.trim();
   if (!question) return;
@@ -12789,14 +12797,14 @@ async function sendChatDocument(question, format) {
   } finally {
     if (activeChatRequestController === controller) activeChatRequestController = null;
     syncChatControlState();
-    document.getElementById('chatInput').focus();
+    chatInputEl.focus();
     await loadChatSessions(true, currentChatSessionId, { skipOpen: true }).catch(function() {});
   }
 }
 
 async function startChatResearch(mode) {
   if (!currentWorkspaceId) return;
-  var input = document.getElementById('chatInput');
+  var input = chatInputEl;
   var topic = input.value.trim();
   if (!topic) { input.focus(); return; }
   var ctx = currentChatContextSelection();
@@ -12893,7 +12901,7 @@ function addChatMessage(role, content, options) {
 }
 
 function scrollChat() {
-  const c = document.getElementById('chatMessages');
+  const c = chatMessagesEl;
   if (c) c.scrollTop = c.scrollHeight;
 }
 
@@ -13051,7 +13059,7 @@ const _origSendChat = sendChat;
 async function sendChatVoice() {
   if (!currentWorkspaceId) return;
   if (chatRequestActive()) return;
-  const input = document.getElementById('chatInput');
+  const input = chatInputEl;
   const draftText = input.value;
   const question = draftText.trim();
   if (!question) return;
@@ -13061,7 +13069,7 @@ async function sendChatVoice() {
   }
   const contextSelection = currentChatContextSelection();
   setChatComposeWarning('');
-  const container = document.getElementById('chatMessages');
+  const container = chatMessagesEl;
   const userMessage = { role: 'user', content: question };
   appendChatMessageToHistory(userMessage);
   renderChatMessagePayload(userMessage);
@@ -14037,7 +14045,7 @@ async function startLiveTranscribe() {
     loadLiveQAHistory();
   }
   document.getElementById('liveResults').classList.remove('active');
-  document.getElementById('livePipeline').classList.remove('active');
+  livePipelineEl.classList.remove('active');
   document.getElementById('liveError').classList.remove('active');
   document.getElementById('savedMeetingRow').style.display = 'none';
   updateLiveActivity({
@@ -14356,7 +14364,7 @@ analyzeTranscriptBtn.addEventListener('click', async function() {
   analyzeTranscriptBtn.textContent = 'Saving and analyzing...';
   updateLiveActivity({ mode: 'analyzing', status: 'Analyzing live transcript...', error: '', completedAt: 0 });
 
-  document.getElementById('livePipeline').classList.add('active');
+  livePipelineEl.classList.add('active');
   var step = document.querySelector('#livePipeline .pipe-step');
   if (step) step.classList.add('current');
   const analysisWorkspaceId = liveSessionOriginWorkspaceId() || currentWorkspaceId;
@@ -14398,7 +14406,7 @@ analyzeTranscriptBtn.addEventListener('click', async function() {
 
     if (!finalResult) throw new Error('No result received');
 
-    document.getElementById('livePipeline').classList.remove('active');
+    livePipelineEl.classList.remove('active');
     if (step) { step.classList.remove('current'); step.classList.add('done'); }
 
     document.getElementById('liveSummary').textContent = finalResult.summary || '';
@@ -14425,7 +14433,7 @@ analyzeTranscriptBtn.addEventListener('click', async function() {
     updateLiveActivity({ mode: 'ready', status: 'Live analysis complete.', error: '', completedAt: Date.now() });
 
   } catch (err) {
-    document.getElementById('livePipeline').classList.remove('active');
+    livePipelineEl.classList.remove('active');
     showLiveError(err.message);
     updateLiveActivity({ mode: 'error', status: 'Live analysis failed.', error: err.message, completedAt: Date.now() });
   } finally {
@@ -14443,7 +14451,7 @@ document.getElementById('clearTranscriptBtn').addEventListener('click', function
   analyzeTranscriptBtn.disabled = true;
   document.getElementById('liveResults').classList.remove('active');
   document.getElementById('liveError').classList.remove('active');
-  document.getElementById('livePipeline').classList.remove('active');
+  livePipelineEl.classList.remove('active');
   document.getElementById('savedMeetingRow').style.display = 'none';
   clearLiveActivity();
 });
@@ -14469,7 +14477,7 @@ document.getElementById('liveResetBtn').addEventListener('click', function() {
   analyzeTranscriptBtn.disabled = true;
   document.getElementById('liveResults').classList.remove('active');
   document.getElementById('liveError').classList.remove('active');
-  document.getElementById('livePipeline').classList.remove('active');
+  livePipelineEl.classList.remove('active');
   clearLiveActivity();
 });
 
@@ -15559,9 +15567,9 @@ function collectGenerateResearchRefinement() {
 
 async function prepareResearchRefinement() {
   if (!currentWorkspaceId) return null;
-  const topic = document.getElementById('researchTopicInput').value.trim();
+  const topic = researchTopicInputEl.value.trim();
   if (!topic) return null;
-  const mode = document.getElementById('researchModeSelect').value || 'quick';
+  const mode = researchModeSelectEl.value || 'quick';
   const researchType = document.getElementById('researchTypeSelect').value || 'general';
   const signature = currentResearchSignature();
   if (researchRefinementPlan && researchRefinementSignature === signature) {
@@ -15683,10 +15691,10 @@ document.getElementById('researchStartBtn').addEventListener('click', function()
 
 async function startResearch() {
   if (!currentWorkspaceId) return;
-  const topicInput = document.getElementById('researchTopicInput');
+  const topicInput = researchTopicInputEl;
   const topic = topicInput.value.trim();
   if (!topic) return;
-  const mode = document.getElementById('researchModeSelect').value || 'quick';
+  const mode = researchModeSelectEl.value || 'quick';
   const researchType = document.getElementById('researchTypeSelect').value || 'general';
   const btn = document.getElementById('researchStartBtn');
   const signature = currentResearchSignature();

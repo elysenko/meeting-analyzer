@@ -1632,8 +1632,8 @@ async def index(request: Request):
                     "ON CONFLICT (id) DO UPDATE SET email = $2, name = $3, last_login_at = NOW()",
                     user_id, email, name,
                 )
-        except Exception:
-            pass
+        except Exception as _exc:
+            logger.warning("Failed to upsert user record for %s: %s", user_id, _exc)
     user_sig = _sign_user_id(user_id) if user_id else ""
     prefix_script = f"<script>const __BASE='{APP_PATH_PREFIX}';const __USER_ID='{user_id}';const __USER_SIG='{user_sig}';const __oF=window.fetch;window.fetch=function(u,o){{if(typeof u==='string'&&u.startsWith('/')&&!u.startsWith(__BASE))u=__BASE+u;o=o||{{}};o.headers=o.headers||{{}};if(__USER_ID){{o.headers['X-User-Id']=__USER_ID;o.headers['X-User-Sig']=__USER_SIG}};return __oF.call(this,u,o)}};const __WS=window.WebSocket;window.WebSocket=function(u,p){{let wu=u.replace(/^(wss?:\\/\\/[^\\/]+)(\\/ws\\/)/,'$1'+__BASE+'$2');if(__USER_ID){{const sep=wu.indexOf('?')===-1?'?':'&';wu+=sep+'_uid='+encodeURIComponent(__USER_ID)+'&_usig='+encodeURIComponent(__USER_SIG)}};return new __WS(wu,p)}};Object.setPrototypeOf(window.WebSocket,__WS);</script>"
     html = HTML_PAGE.replace("</head>", prefix_script + "\n</head>", 1)
@@ -3018,7 +3018,6 @@ async def _sync_workspace_canvas(workspace_id: int, user_id: str) -> dict:
         syllabus_body = course.get("syllabus_body", "")
         if syllabus_body and len(syllabus_body.strip()) > 50:
             # Convert HTML to plain text
-            from bs4 import BeautifulSoup
             soup = BeautifulSoup(syllabus_body, "html.parser")
             syllabus_text = soup.get_text(separator="\n", strip=True)
 
