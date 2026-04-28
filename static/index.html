@@ -3849,14 +3849,14 @@ const recUploadStatusEl = document.getElementById('recUploadStatus');
 const recUploadTitleEl = document.getElementById('recUploadTitle');
 const recUploadHintEl = document.getElementById('recUploadHint');
 const recUploadQueueListEl = document.getElementById('recUploadQueueList');
-const generateTaskStatusEl = generateTaskStatusEl;
-const generateTaskBodyEl = generateTaskBodyEl;
-const chatInputEl = chatInputEl;
-const chatMessagesEl = chatMessagesEl;
-const researchTopicInputEl = researchTopicInputEl;
-const researchModeSelectEl = researchModeSelectEl;
-const livePipelineEl = livePipelineEl;
-const folderBreadcrumbEl = folderBreadcrumbEl;
+const generateTaskStatusEl = document.getElementById('generateTaskStatus');
+const generateTaskBodyEl = document.getElementById('generateTaskBody');
+const chatInputEl = document.getElementById('chatInput');
+const chatMessagesEl = document.getElementById('chatMessages');
+const researchTopicInputEl = document.getElementById('researchTopicInput');
+const researchModeSelectEl = document.getElementById('researchModeSelect');
+const livePipelineEl = document.getElementById('livePipeline');
+const folderBreadcrumbEl = document.getElementById('folderBreadcrumb');
 const DEFAULT_UPLOAD_TITLE = 'Drop a recording here';
 const DEFAULT_UPLOAD_HINT = 'MP4, M4A, or MP3 · or click to browse';
 
@@ -4364,8 +4364,7 @@ async function applyGlobalDefaults(scope) {
     })
   });
   if (!resp.ok) {
-    const errBody = await resp.json().catch(function() { return { detail: resp.statusText }; });
-    throw new Error(errBody.detail || 'Failed to apply defaults.');
+    throw new Error(await parseJSONError(resp, 'Failed to apply defaults.'));
   }
   const result = await resp.json();
   if (scope === 'current') {
@@ -5808,8 +5807,7 @@ async function renameCurrentChatSession() {
     body: JSON.stringify({ title: nextTitle.trim() })
   });
   if (!resp.ok) {
-    const errBody = await resp.json().catch(function() { return { detail: resp.statusText }; });
-    throw new Error(errBody.detail || 'Failed to rename chat.');
+    throw new Error(await parseJSONError(resp, 'Failed to rename chat.'));
   }
   const session = await resp.json();
   upsertChatSession(session);
@@ -5828,8 +5826,7 @@ async function deleteCurrentChatSession() {
   const sessionId = currentChatSessionId;
   const resp = await fetch('/workspaces/' + currentWorkspaceId + '/chat/sessions/' + sessionId, { method: 'DELETE' });
   if (!resp.ok) {
-    const errBody = await resp.json().catch(function() { return { detail: resp.statusText }; });
-    throw new Error(errBody.detail || 'Failed to delete chat.');
+    throw new Error(await parseJSONError(resp, 'Failed to delete chat.'));
   }
   chatSessionLoadToken += 1;
   chatSessionOpenToken += 1;
@@ -6313,8 +6310,7 @@ async function sendTemplateRefineMessage() {
       body: JSON.stringify({ message: msg })
     });
     if (!resp.ok) {
-      const err = await resp.json().catch(function() { return { detail: resp.statusText }; });
-      throw new Error(err.detail || 'Refinement failed.');
+      throw new Error(await parseJSONError(resp, 'Refinement failed.'));
     }
     const data = await resp.json();
     if (statusBubble) statusBubble.querySelector('.msg-content').textContent = data.assistant_message || 'Outline updated.';
@@ -8355,8 +8351,7 @@ async function saveTodoStatus(todoId, status, control) {
       });
     }
     if (!resp.ok) {
-      const errBody = await resp.json().catch(function() { return { detail: resp.statusText }; });
-      throw new Error(errBody.detail || 'Failed to update task status.');
+      throw new Error(await parseJSONError(resp, 'Failed to update task status.'));
     }
     await loadWorkspaceTodos();
     if (currentGenerateTaskId) {
@@ -8393,8 +8388,7 @@ async function updateTodoFields(meetingId, todoIndex, options, button) {
       body: JSON.stringify({ due_date: dueDate, assignee: assignee, status: status })
     });
     if (!resp.ok) {
-      const errBody = await resp.json().catch(function() { return { detail: resp.statusText }; });
-      throw new Error(errBody.detail || 'Failed to update due date.');
+      throw new Error(await parseJSONError(resp, 'Failed to update due date.'));
     }
     await loadWorkspaceTodos();
   } catch (err) {
@@ -8456,8 +8450,7 @@ async function saveManualTodoFromComposer() {
       body: JSON.stringify(payload)
     });
     if (!resp.ok) {
-      const errBody = await resp.json().catch(function() { return { detail: resp.statusText }; });
-      throw new Error(errBody.detail || 'Failed to save task.');
+      throw new Error(await parseJSONError(resp, 'Failed to save task.'));
     }
     resetTodoComposer();
     await loadWorkspaceTodos();
@@ -8480,8 +8473,7 @@ async function deleteManualTodo(todoId, button) {
       method: 'DELETE'
     });
     if (!resp.ok) {
-      const errBody = await resp.json().catch(function() { return { detail: resp.statusText }; });
-      throw new Error(errBody.detail || 'Failed to delete task.');
+      throw new Error(await parseJSONError(resp, 'Failed to delete task.'));
     }
     if (manualTodoEditingId === todoId) resetTodoComposer();
     generateTodoSelectedIds.delete(todoId);
@@ -8999,8 +8991,7 @@ async function saveCalendarEvent() {
       body: JSON.stringify(payload)
     });
     if (!resp.ok) {
-      const errBody = await resp.json().catch(function() { return { detail: resp.statusText }; });
-      throw new Error(errBody.detail || 'Failed to save event');
+      throw new Error(await parseJSONError(resp, 'Failed to save event'));
     }
     closeCalendarEventEditor();
     await loadWorkspaceCalendar();
@@ -9025,8 +9016,7 @@ async function deleteCalendarEvent() {
       method: 'DELETE'
     });
     if (!resp.ok) {
-      const errBody = await resp.json().catch(function() { return { detail: resp.statusText }; });
-      throw new Error(errBody.detail || 'Failed to delete event');
+      throw new Error(await parseJSONError(resp, 'Failed to delete event'));
     }
     closeCalendarEventEditor();
     await loadWorkspaceCalendar();
@@ -9595,8 +9585,7 @@ async function sendQuestionChatMessage(questionKey) {
       signal: controller.signal
     });
     if (!resp.ok) {
-      var err = await resp.json().catch(function() { return { detail: resp.statusText }; });
-      throw new Error(err.detail || 'Chat request failed.');
+      throw new Error(await parseJSONError(resp, 'Chat request failed.'));
     }
     var payload = await resp.json();
     var thinkingEl = document.querySelector('[data-qchat-thinking="' + questionKey + '"]');
@@ -10009,8 +9998,7 @@ async function openGenerateTask(taskId, options) {
   const url = '/workspaces/' + currentWorkspaceId + '/generate/tasks/' + taskId + (runId ? ('?run_id=' + encodeURIComponent(runId)) : '');
   const resp = await fetch(url);
   if (!resp.ok) {
-    const err = await resp.json().catch(function() { return { detail: resp.statusText }; });
-    throw new Error(err.detail || 'Failed to load task session.');
+    throw new Error(await parseJSONError(resp, 'Failed to load task session.'));
   }
   adoptGenerateTaskPayload(await resp.json());
   if (taskChanged || (previousRunId && currentGenerateTaskViewRunId && previousRunId !== currentGenerateTaskViewRunId)) {
@@ -10043,8 +10031,7 @@ async function deleteGenerateTaskRun(runId) {
     method: 'DELETE'
   });
   if (!resp.ok) {
-    const err = await resp.json().catch(function() { return { detail: resp.statusText }; });
-    throw new Error(err.detail || 'Failed to delete attempt.');
+    throw new Error(await parseJSONError(resp, 'Failed to delete attempt.'));
   }
   const payload = await resp.json();
   await Promise.all([
@@ -10081,8 +10068,7 @@ async function deleteGenerateTask(taskId) {
     method: 'DELETE'
   });
   if (!resp.ok) {
-    const err = await resp.json().catch(function() { return { detail: resp.statusText }; });
-    throw new Error(err.detail || 'Failed to delete task.');
+    throw new Error(await parseJSONError(resp, 'Failed to delete task.'));
   }
   await Promise.all([
     loadWorkspaceTodos(),
@@ -10126,8 +10112,7 @@ async function startGenerateTaskFromTodo(todoId, options) {
     })
   });
   if (!resp.ok) {
-    const err = await resp.json().catch(function() { return { detail: resp.statusText }; });
-    throw new Error(err.detail || 'Failed to start generate task.');
+    throw new Error(await parseJSONError(resp, 'Failed to start generate task.'));
   }
   const session = await resp.json();
   await loadWorkspaceTodos();
@@ -10146,8 +10131,7 @@ async function resetGenerateTaskStep(step) {
     body: JSON.stringify({ step: step })
   });
   if (!resp.ok) {
-    const err = await resp.json().catch(function() { return { detail: resp.statusText }; });
-    throw new Error(err.detail || 'Failed to reset step.');
+    throw new Error(await parseJSONError(resp, 'Failed to reset step.'));
   }
   const data = await resp.json();
   currentGenerateTask = data;
@@ -10161,8 +10145,7 @@ async function patchGenerateTaskRequest(taskId, update) {
     body: JSON.stringify(update)
   });
   if (!resp.ok) {
-    const err = await resp.json().catch(function() { return { detail: resp.statusText }; });
-    throw new Error(err.detail || 'Failed to save task session.');
+    throw new Error(await parseJSONError(resp, 'Failed to save task session.'));
   }
   return resp.json();
 }
@@ -10394,8 +10377,7 @@ async function prepareGenerateResearchRefinement(mode) {
     body: JSON.stringify({ topic: topic || null, mode: generateResearchMode, research_type: 'general' })
   });
   if (!resp.ok) {
-    const errBody = await resp.json().catch(function() { return { detail: resp.statusText }; });
-    throw new Error(errBody.detail || 'Failed to prepare task research refinement.');
+    throw new Error(await parseJSONError(resp, 'Failed to prepare task research refinement.'));
   }
   generateResearchRefinementPlan = await resp.json();
   generateResearchRefinementSignature = signature;
@@ -10451,8 +10433,7 @@ async function runGenerateResearch(mode) {
       body: JSON.stringify({ mode: 'quick', research_type: 'general' })
     });
     if (!resp.ok) {
-      const err = await resp.json().catch(function() { return { detail: resp.statusText }; });
-      throw new Error(err.detail || 'Research failed to start.');
+      throw new Error(await parseJSONError(resp, 'Research failed to start.'));
     }
     const reader = resp.body.getReader();
     const decoder = new TextDecoder();
@@ -10583,8 +10564,7 @@ async function buildTaskQuestions() {
       method: 'POST'
     });
     if (!resp.ok) {
-      const err = await resp.json().catch(function() { return { detail: resp.statusText }; });
-      throw new Error(err.detail || 'Question generation failed.');
+      throw new Error(await parseJSONError(resp, 'Question generation failed.'));
     }
     const payload = await resp.json();
     adoptGenerateTaskPayload(payload.session || currentGenerateTask);
@@ -10616,8 +10596,7 @@ async function autofillTaskAnswers() {
       body: JSON.stringify({ overwrite: false })
     });
     if (!resp.ok) {
-      const err = await resp.json().catch(function() { return { detail: resp.statusText }; });
-      throw new Error(err.detail || 'Autofill failed.');
+      throw new Error(await parseJSONError(resp, 'Autofill failed.'));
     }
     const payload = await resp.json();
     adoptGenerateTaskPayload(payload.session || currentGenerateTask);
@@ -10655,8 +10634,7 @@ async function autofillSingleTaskAnswer(questionKey) {
         signal: controller.signal
       });
       if (!resp.ok) {
-        const err = await resp.json().catch(function() { return { detail: resp.statusText }; });
-        throw new Error(err.detail || 'Question autofill failed.');
+        throw new Error(await parseJSONError(resp, 'Question autofill failed.'));
       }
       return resp.json();
     }
@@ -10713,8 +10691,7 @@ async function runTaskQuestionResearch(questionKey) {
       signal: controller.signal
     });
     if (!resp.ok) {
-      const err = await resp.json().catch(function() { return { detail: resp.statusText }; });
-      throw new Error(err.detail || 'Question research failed to start.');
+      throw new Error(await parseJSONError(resp, 'Question research failed to start.'));
     }
     const reader = resp.body.getReader();
     const decoder = new TextDecoder();
@@ -10793,8 +10770,7 @@ async function generateDeliverableFromTask() {
       body: JSON.stringify({ output_type: currentGenerateTask.output_type })
     });
     if (!resp.ok) {
-      const err = await resp.json().catch(function() { return { detail: resp.statusText }; });
-      throw new Error(err.detail || 'Generation failed.');
+      throw new Error(await parseJSONError(resp, 'Generation failed.'));
     }
     const reader = resp.body.getReader();
     const decoder = new TextDecoder();
@@ -11339,8 +11315,7 @@ async function startNextQueuedUpload() {
   try {
     const resp = await fetch(url, { method: 'POST', body: form, signal: uploadAbortController.signal });
     if (!resp.ok) {
-      const errBody = await resp.json().catch(function() { return { detail: resp.statusText }; });
-      throw new Error(errBody.detail || 'Server error ' + resp.status);
+      throw new Error(await parseJSONError(resp, 'Server error ' + resp.status));
     }
     const queued = await resp.json();
     const jobId = queued.job_id;
@@ -11819,8 +11794,7 @@ document.getElementById('detailDeleteBtn').addEventListener('click', async funct
   try {
     const resp = await fetch('/meetings/' + currentMeetingId, { method: 'DELETE' });
     if (!resp.ok) {
-      const errBody = await resp.json().catch(function() { return { detail: resp.statusText }; });
-      throw new Error(errBody.detail || 'Failed to delete meeting.');
+      throw new Error(await parseJSONError(resp, 'Failed to delete meeting.'));
     }
     closeMeetingDetail();
     await refreshMeetingCollections();
@@ -11840,8 +11814,7 @@ document.getElementById('detailMoveBtn').addEventListener('click', async functio
       body: JSON.stringify({ workspace_id: targetWorkspaceId })
     });
     if (!resp.ok) {
-      const errBody = await resp.json().catch(function() { return { detail: resp.statusText }; });
-      throw new Error(errBody.detail || 'Failed to move meeting.');
+      throw new Error(await parseJSONError(resp, 'Failed to move meeting.'));
     }
     await refreshMeetingCollections();
     await showMeeting(currentMeetingId);
@@ -11877,8 +11850,7 @@ document.getElementById('detailAnalyzeDocBtn').addEventListener('click', async f
       method: 'POST'
     });
     if (!resp.ok) {
-      const errBody = await resp.json().catch(function() { return { detail: resp.statusText }; });
-      throw new Error(errBody.detail || 'Document analysis failed.');
+      throw new Error(await parseJSONError(resp, 'Document analysis failed.'));
     }
     const result = await resp.json();
     updateDocumentAnalysisActivity({
@@ -12844,8 +12816,7 @@ async function startChatResearch(mode) {
       signal: controller.signal
     });
     if (!resp.ok) {
-      var errBody = await resp.json().catch(function() { return { detail: resp.statusText }; });
-      throw new Error(errBody.detail || 'Research request failed.');
+      throw new Error(await parseJSONError(resp, 'Research request failed.'));
     }
     var reader = resp.body.getReader();
     var decoder = new TextDecoder();
@@ -13736,8 +13707,7 @@ async function askLiveQA(question, meetingIds, docIds, researchIds, transcriptCt
       signal: liveQAAbortController.signal
     });
     if (!resp.ok) {
-      var errBody = await resp.json().catch(function() { return { detail: resp.statusText }; });
-      throw new Error(errBody.detail || 'Error ' + resp.status);
+      throw new Error(await parseJSONError(resp));
     }
 
     var payload = await resp.json();
@@ -14384,8 +14354,7 @@ analyzeTranscriptBtn.addEventListener('click', async function() {
       body: JSON.stringify({ text: liveFinalText, workspace_id: analysisWorkspaceId })
     });
     if (!resp.ok) {
-      const errBody = await resp.json().catch(function() { return { detail: resp.statusText }; });
-      throw new Error(errBody.detail || 'Error ' + resp.status);
+      throw new Error(await parseJSONError(resp));
     }
 
     const reader = resp.body.getReader();
@@ -14794,8 +14763,7 @@ async function attachUploadedDocumentToTask(workspaceId, taskId, documentId) {
     body: JSON.stringify({ selected_document_ids: baseIds })
   });
   if (!resp.ok) {
-    const err = await resp.json().catch(function() { return { detail: resp.statusText }; });
-    throw new Error(err.detail || 'Failed to attach supporting content to the task session.');
+    throw new Error(await parseJSONError(resp, 'Failed to attach supporting content to the task session.'));
   }
   const updated = await resp.json();
   if (currentWorkspaceId !== workspaceId) return updated;
@@ -15591,8 +15559,7 @@ async function prepareResearchRefinement() {
     body: JSON.stringify({ topic: topic, mode: mode, research_type: researchType })
   });
   if (!resp.ok) {
-    const errBody = await resp.json().catch(function() { return { detail: resp.statusText }; });
-    throw new Error(errBody.detail || 'Failed to generate refinement questions.');
+    throw new Error(await parseJSONError(resp, 'Failed to generate refinement questions.'));
   }
   researchRefinementPlan = await resp.json();
   researchRefinementSignature = signature;
@@ -15757,8 +15724,7 @@ async function startResearch() {
       body: JSON.stringify({ topic: topic, mode: mode, research_type: researchType, refinement: refinement })
     });
     if (!resp.ok) {
-      const errBody = await resp.json().catch(function() { return { detail: resp.statusText }; });
-      throw new Error(errBody.detail || 'Failed to start research.');
+      throw new Error(await parseJSONError(resp, 'Failed to start research.'));
     }
 
     const reader = resp.body.getReader();
@@ -15885,8 +15851,7 @@ async function generateFromContext() {
       })
     });
     if (!resp.ok) {
-      const errBody = await resp.json().catch(function() { return { detail: resp.statusText }; });
-      throw new Error(errBody.detail || 'Generation failed.');
+      throw new Error(await parseJSONError(resp, 'Generation failed.'));
     }
 
     const reader = resp.body.getReader();
