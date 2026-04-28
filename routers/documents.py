@@ -13,6 +13,8 @@ from fastapi import APIRouter, BackgroundTasks, File, HTTPException, Request, Up
 from starlette.responses import StreamingResponse
 
 from config import MINIO_BUCKET
+from document_processing import _detect_mime
+from services import documents_svc as _docs_svc
 from services.documents_svc import serialize_document_row as _serialize_document_row
 from services.file_utils import _content_disposition
 from services.storage import get_minio_client
@@ -29,9 +31,6 @@ async def upload_document(
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
 ):
-    from main_live import (
-        _detect_mime, _extract_and_store,
-    )
     await _ensure_user_workspace(request, workspace_id)
 
     data = await file.read()
@@ -57,7 +56,11 @@ async def upload_document(
         )
     doc = _serialize_document_row(row)
 
-    background_tasks.add_task(_extract_and_store, doc["id"], workspace_id, data, mime_type, filename)
+    background_tasks.add_task(
+        _docs_svc.extract_and_store,
+        request.app.state.db_pool, request.app.state.minio_client,
+        doc["id"], workspace_id, data, mime_type, filename,
+    )
 
     return doc
 
@@ -288,7 +291,6 @@ async def get_document_text(request: Request, workspace_id: int, doc_id: int):
 
 @router.post("/workspaces/{workspace_id}/documents/{doc_id}/analyze")
 async def analyze_document_summary(request: Request, workspace_id: int, doc_id: int):
-    from main_live import _analyze_document_and_store
     await _ensure_user_workspace(request, workspace_id)
     async with request.app.state.db_pool.acquire() as conn:
         row = await conn.fetchrow(
@@ -304,7 +306,7 @@ async def analyze_document_summary(request: Request, workspace_id: int, doc_id: 
     if not extracted_text.strip():
         raise HTTPException(status_code=400, detail="Document text has not been extracted yet.")
     try:
-        await _analyze_document_and_store(doc_id, workspace_id, extracted_text)
+        await _docs_svc.analyze_document_and_store(request.app.state.db_pool, doc_id, workspace_id, extracted_text)
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"Document analysis failed: {exc}") from exc
     return await get_document_detail(request, workspace_id, doc_id)
@@ -313,7 +315,6 @@ async def analyze_document_summary(request: Request, workspace_id: int, doc_id: 
 @router.post("/workspaces/{workspace_id}/documents/{doc_id}/rotate-pages")
 async def rotate_document_pages(request: Request, workspace_id: int, doc_id: int, body: dict):
     """Rotate pages in a stored PDF (raw file and/or preview) and overwrite in MinIO."""
-    from main_live import _rotate_pdf_pages_sync
     degrees = body.get("degrees")
     landscape_only = body.get("landscape_only", False)
     page_indices = body.get("page_indices")
@@ -345,7 +346,7 @@ async def rotate_document_pages(request: Request, workspace_id: int, doc_id: int
             resp = await client.get_object(Bucket=MINIO_BUCKET, Key=key)
             data = await resp["Body"].read()
             rotated = await asyncio.to_thread(
-                _rotate_pdf_pages_sync, data, degrees, landscape_only, page_indices
+                _docs_svc.rotate_pdf_pages_sync, data, degrees, landscape_only, page_indices
             )
             await client.put_object(
                 Bucket=MINIO_BUCKET, Key=key, Body=rotated,
