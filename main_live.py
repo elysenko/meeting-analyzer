@@ -455,7 +455,11 @@ def _render_markdown_html(text: str) -> str:
         protocols=["http", "https", "mailto"],
         strip=True,
     )
-    return bleach.linkify(cleaned)
+    def _set_link_target(attrs, new=False):
+        attrs[(None, "target")] = "_blank"
+        attrs[(None, "rel")] = "noopener noreferrer"
+        return attrs
+    return bleach.linkify(cleaned, callbacks=[_set_link_target])
 
 
 def _fallback_llm_models() -> dict[str, Any]:
