@@ -722,48 +722,43 @@ from llm import (  # noqa: E402
 llm_runner_service = create_llm_runner_service(LLM_RUNNER_URL)
 
 
-def _search_result_url(href: str | None) -> str | None:
-    if not href:
-        return None
-    href = href.strip()
-    if href.startswith("//"):
-        href = "https:" + href
-    parsed = urlparse(href)
-    if "duckduckgo.com" in parsed.netloc and parsed.path.startswith("/l/"):
-        params = parse_qs(parsed.query)
-        target = params.get("uddg", [None])[0]
-        if target:
-            return unquote(target)
-    if href.startswith("http://") or href.startswith("https://"):
-        return href
-    return None
+async def _search_web(query: str, max_results: int = 5, delay: float = 0.0) -> list[dict[str, str]]:
+    """Search DuckDuckGo via the duckduckgo-search library.
 
-
-async def _search_web(query: str, max_results: int = 5) -> list[dict[str, str]]:
-    headers = {"User-Agent": SEARCH_USER_AGENT}
-    async with httpx.AsyncClient(timeout=30.0, headers=headers, follow_redirects=True) as client:
-        resp = await client.get("https://lite.duckduckgo.com/lite/", params={"q": query})
-        resp.raise_for_status()
-    soup = BeautifulSoup(resp.text, "lxml")
+    Each call creates a fresh DDGS instance (own VQD token/session).
+    An optional delay is applied before the request to stagger parallel calls.
+    """
+    if delay > 0:
+        await asyncio.sleep(delay)
+    try:
+        from duckduckgo_search import DDGS
+        from duckduckgo_search.exceptions import DuckDuckGoSearchException
+    except ImportError:
+        logger.warning("duckduckgo-search not installed; web search unavailable")
+        return []
+    try:
+        raw = await asyncio.to_thread(
+            lambda: list(DDGS().text(query, max_results=max_results, backend="auto"))
+        )
+    except Exception as exc:
+        logger.warning("DDG search failed for %r: %s", query[:80], exc)
+        return []
     results: list[dict[str, str]] = []
     seen: set[str] = set()
-    for anchor in soup.select("a[href]"):
-        title = " ".join(anchor.get_text(" ", strip=True).split())
-        url = _search_result_url(anchor.get("href"))
-        if not title or not url or url in seen:
+    for item in raw:
+        url = (item.get("href") or "").strip()
+        if not url or url in seen:
             continue
         netloc = urlparse(url).netloc.lower()
-        if not netloc or "duckduckgo.com" in netloc:
+        if not netloc:
             continue
         seen.add(url)
         results.append({
-            "title": title,
+            "title": (item.get("title") or url).strip(),
             "url": url,
             "domain": netloc,
             "query": query,
         })
-        if len(results) >= max_results:
-            break
     return results
 
 
@@ -848,8 +843,10 @@ async def _collect_research_sources(
     per_query_results: int,
     max_sources: int,
 ) -> list[dict[str, Any]]:
+    # Stagger query starts by 0.3 s each so DDG sees spaced requests
+    # rather than an instant burst, while still running concurrently.
     search_batches = await asyncio.gather(
-        *[_search_web(q, max_results=per_query_results) for q in queries],
+        *[_search_web(q, max_results=per_query_results, delay=i * 0.3) for i, q in enumerate(queries)],
         return_exceptions=True,
     )
     ranked: list[dict[str, str]] = []
