@@ -5620,16 +5620,23 @@ function upsertChatSession(session) {
   });
 }
 
-async function openChatSession(sessionId) {
+async function openChatSession(sessionId, _preloadedPayload) {
   if (!currentWorkspaceId) return;
   if (chatRequestActive()) throw new Error('Stop the current response before switching chats.');
   if (!sessionId) throw new Error('No chat session selected.');
   const workspaceId = currentWorkspaceId;
   const requestToken = ++chatSessionOpenToken;
   chatSessionLoadToken += 1;
-  const resp = await fetch('/workspaces/' + currentWorkspaceId + '/chat/sessions/' + sessionId);
-  if (!resp.ok) throw new Error('Failed to load chat session.');
-  const payload = await resp.json();
+  // Use the pre-loaded payload when available (parallel-fetched by loadChatSessions) to
+  // avoid a sequential round-trip. Fall back to a regular fetch if not provided.
+  let payload;
+  if (_preloadedPayload && _preloadedPayload.session && _preloadedPayload.session.id === sessionId) {
+    payload = _preloadedPayload;
+  } else {
+    const resp = await fetch('/workspaces/' + currentWorkspaceId + '/chat/sessions/' + sessionId);
+    if (!resp.ok) throw new Error('Failed to load chat session.');
+    payload = await resp.json();
+  }
   if (workspaceId !== currentWorkspaceId || requestToken !== chatSessionOpenToken) return;
   currentChatSessionId = payload.session && payload.session.id != null ? payload.session.id : sessionId;
   _syncUrlState();
@@ -5671,6 +5678,14 @@ async function loadChatSessions(force, preferredSessionId, options) {
   }
   const workspaceId = currentWorkspaceId;
   const requestToken = ++chatSessionLoadToken;
+  // Read the most likely target session ID from localStorage synchronously — before any
+  // network I/O — so we can fire a speculative detail fetch in parallel with the list.
+  const speculativeId = preferredSessionId || currentChatSessionId || getStoredChatSessionId(currentWorkspaceId);
+  const speculativeDetailPromise = speculativeId
+    ? fetch('/workspaces/' + workspaceId + '/chat/sessions/' + speculativeId)
+        .then(function(r) { return r.ok ? r.json() : null; })
+        .catch(function() { return null; })
+    : Promise.resolve(null);
   const resp = await fetch('/workspaces/' + currentWorkspaceId + '/chat/sessions');
   if (!resp.ok) throw new Error('Failed to load chat sessions.');
   const sessions = await resp.json();
@@ -5704,7 +5719,10 @@ async function loadChatSessions(force, preferredSessionId, options) {
     syncChatControlState();
     return;
   }
-  await openChatSession(targetId);
+  // By the time we've awaited the session list, the speculative detail fetch has had the
+  // full list RTT to complete. Pass it to openChatSession to skip a second round-trip.
+  const preloaded = await speculativeDetailPromise;
+  await openChatSession(targetId, preloaded && preloaded.session && preloaded.session.id === targetId ? preloaded : null);
 }
 
 async function createChatSession(options) {

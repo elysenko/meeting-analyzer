@@ -7785,21 +7785,31 @@ async def _list_workspace_chat_sessions(workspace_id: int) -> list[dict[str, Any
     async with db_pool.acquire() as conn:
         rows = await conn.fetch(
             """
+            WITH session_ids AS (
+              SELECT id FROM workspace_chat_sessions
+              WHERE workspace_id = $1 AND NOT archived
+            ),
+            msg_counts AS (
+              SELECT chat_session_id, COUNT(*) AS message_count
+              FROM workspace_chat_messages
+              WHERE chat_session_id IN (SELECT id FROM session_ids)
+              GROUP BY chat_session_id
+            ),
+            last_msgs AS (
+              SELECT DISTINCT ON (chat_session_id)
+                chat_session_id,
+                LEFT(content, 180) AS last_message_preview
+              FROM workspace_chat_messages
+              WHERE chat_session_id IN (SELECT id FROM session_ids)
+              ORDER BY chat_session_id, id DESC
+            )
             SELECT s.id, s.workspace_id, s.title, s.archived, s.created_at, s.updated_at,
                    s.context_meeting_ids, s.context_document_ids, s.context_research_ids,
-                   COALESCE((
-                     SELECT COUNT(*)
-                     FROM workspace_chat_messages m
-                     WHERE m.chat_session_id = s.id
-                   ), 0)::int AS message_count,
-                   COALESCE((
-                     SELECT LEFT(m2.content, 180)
-                     FROM workspace_chat_messages m2
-                     WHERE m2.chat_session_id = s.id
-                     ORDER BY m2.id DESC
-                     LIMIT 1
-                   ), '') AS last_message_preview
+                   COALESCE(mc.message_count, 0)::int AS message_count,
+                   COALESCE(lm.last_message_preview, '') AS last_message_preview
             FROM workspace_chat_sessions s
+            LEFT JOIN msg_counts mc ON mc.chat_session_id = s.id
+            LEFT JOIN last_msgs   lm ON lm.chat_session_id = s.id
             WHERE s.workspace_id = $1 AND NOT s.archived
             ORDER BY s.updated_at DESC, s.id DESC
             """,
