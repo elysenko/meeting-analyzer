@@ -4297,7 +4297,7 @@ async function loadSkillCatalog(force) {
 }
 
 async function loadGlobalLLMDefaults() {
-  await loadLLMModels();
+  try { await loadLLMModels(); } catch (e) { /* catalog unavailable — continue */ }
   const resp = await fetch('/settings/llm-defaults');
   if (!resp.ok) throw new Error('Failed to load global model defaults.');
   globalLLMDefaults = normalizeLLMPrefs(await resp.json());
@@ -4306,7 +4306,11 @@ async function loadGlobalLLMDefaults() {
 
 async function loadWorkspaceLLMPreferences() {
   if (!currentWorkspaceId) return;
-  await loadLLMModels();
+  // Load the model catalog in parallel but don't let its failure block the prefs fetch.
+  // Workspace preferences are a simple DB read; they should not depend on the LLM runner
+  // being reachable. If the catalog fails the dropdowns in Settings will be limited but
+  // the model hint in the Live tab will still show the correct saved preference.
+  try { await loadLLMModels(); } catch (e) { /* catalog unavailable — continue */ }
   const resp = await fetch('/workspaces/' + currentWorkspaceId + '/llm-preferences');
   if (!resp.ok) throw new Error('Failed to load workspace model preferences.');
   workspaceLLMPrefs = normalizeLLMPrefs(await resp.json());

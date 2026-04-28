@@ -505,7 +505,10 @@ def _render_markdown_html(text: str) -> str:
 def _fallback_llm_models() -> dict[str, Any]:
     config_text = _read_optional_text(LLM_RUNNER_CONFIG_PATH)
     if not config_text:
-        raise HTTPException(status_code=502, detail="llm-runner model list failed: no model catalog available")
+        # No local config and runner is unavailable — return an empty catalog so the
+        # frontend can still load workspace preferences and show "Using llm-runner defaults."
+        logger.warning("llm-runner /v1/models unavailable and no local config at %s — returning empty catalog", LLM_RUNNER_CONFIG_PATH)
+        return {"providers": [], "default": None}
 
     default_provider = None
     providers: dict[str, dict[str, Any]] = {}
