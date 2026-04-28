@@ -1118,14 +1118,6 @@
     border: 1px solid var(--border); display: block; margin-bottom: 0.35rem;
   }
 
-  .voice-toggle {
-    background: none; border: 1px solid var(--border); border-radius: 8px; color: var(--text-dim);
-    cursor: pointer; padding: 0.6rem 0.7rem; transition: all 0.2s;
-    display: flex; align-items: center; justify-content: center; flex-shrink: 0;
-  }
-  .voice-toggle:hover { border-color: var(--accent-dim); color: var(--accent); }
-  .voice-toggle.active { border-color: var(--accent); color: var(--accent); background: rgba(74,111,165,0.08); }
-  .voice-toggle svg { width: 18px; height: 18px; }
   .chat-stop-btn {
     background: rgba(184,64,64,0.08); border: 1px solid rgba(184,64,64,0.28);
     border-radius: 8px; color: var(--red); cursor: pointer; padding: 0.6rem 0.7rem;
@@ -3367,11 +3359,6 @@
                 <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/>
               </svg>
             </button>
-            <button id="voiceToggle" class="voice-toggle" title="Voice mode: read response aloud">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/>
-              </svg>
-            </button>
             <button id="chatStopBtn" class="chat-stop-btn" title="Stop current response" type="button">
               <svg viewBox="0 0 24 24" fill="currentColor"><rect x="7" y="7" width="10" height="10" rx="1.5"/></svg>
             </button>
@@ -5297,7 +5284,7 @@ function setChatHistoryStatus(message) {
 }
 
 function chatRequestActive() {
-  return !!activeChatRequestController || !!_ttsStreamWs;
+  return !!activeChatRequestController;
 }
 
 function setChatSessionMeta(session) {
@@ -5323,13 +5310,11 @@ function syncChatControlState() {
   const newBtn = document.getElementById('chatNewBtn');
   const sendBtn = document.getElementById('chatSendBtn');
   const stopBtn = document.getElementById('chatStopBtn');
-  const voiceBtn = document.getElementById('voiceToggle');
   const sessionsList = document.getElementById('chatSessionsList');
   const sendBtnFs = document.getElementById('chatSendBtnFs');
   if (newBtn) newBtn.disabled = busy;
   if (sendBtn) sendBtn.disabled = busy;
   if (sendBtnFs) sendBtnFs.disabled = busy;
-  if (voiceBtn) voiceBtn.disabled = busy;
   if (stopBtn) {
     stopBtn.style.display = busy ? 'flex' : 'none';
     stopBtn.disabled = !busy;
@@ -5473,11 +5458,6 @@ function stopActiveChatResponse(statusMessage, options) {
     try { activeChatRequestController.abort(); } catch (e) {}
     activeChatRequestController = null;
   }
-  if (_ttsStreamWs) {
-    try { _ttsStreamWs.close(1000, 'client-stop'); } catch (e) {}
-    _ttsStreamWs = null;
-  }
-  stopStreamingAudio();
   syncChatControlState();
   if (hadActive && !opts.quiet && statusMessage) setChatHistoryStatus(statusMessage);
 }
@@ -12945,234 +12925,6 @@ async function toggleTTS(elementId, btn) {
   }
 }
 
-/* --- Streaming TTS (Voice Mode for Chat) --- */
-let _voiceMode = false;
-let _ttsStreamWs = null;
-let _ttsAudioCtx = null;
-let _ttsPlayerNode = null;
-
-const _workletCode = `
-class PCMPlayerProcessor extends AudioWorkletProcessor {
-  constructor() {
-    super();
-    this.bufSize = sampleRate * 60;
-    this.buf = new Float32Array(this.bufSize);
-    this.wr = 0;
-    this.rd = 0;
-    this.port.onmessage = (e) => {
-      if (e.data && e.data.type === 'clear') { this.rd = this.wr; return; }
-      const s = new Int16Array(e.data);
-      for (let i = 0; i < s.length; i++) {
-        this.buf[this.wr] = s[i] / 32768.0;
-        this.wr = (this.wr + 1) % this.bufSize;
-        if (this.wr === this.rd) this.rd = (this.rd + 1) % this.bufSize;
-      }
-    };
-  }
-  process(inputs, outputs) {
-    const ch = outputs[0][0];
-    for (let i = 0; i < ch.length; i++) {
-      if (this.rd !== this.wr) {
-        ch[i] = this.buf[this.rd];
-        this.rd = (this.rd + 1) % this.bufSize;
-      } else {
-        ch[i] = 0;
-      }
-    }
-    return true;
-  }
-}
-registerProcessor('pcm-player-processor', PCMPlayerProcessor);
-
-class PCMCaptureProcessor extends AudioWorkletProcessor {
-  process(inputs) {
-    const ch = inputs[0] && inputs[0][0];
-    if (ch && ch.length) {
-      const copy = new Float32Array(ch);
-      this.port.postMessage(copy.buffer, [copy.buffer]);
-    }
-    return true;
-  }
-}
-registerProcessor('pcm-capture-processor', PCMCaptureProcessor);
-`;
-
-async function initStreamingAudio(sampleRate) {
-  if (_ttsAudioCtx) {
-    _ttsPlayerNode.port.postMessage({ type: 'clear' });
-    if (_ttsAudioCtx.sampleRate === sampleRate) return;
-    _ttsAudioCtx.close();
-  }
-  _ttsAudioCtx = new AudioContext({ sampleRate: sampleRate });
-  const blob = new Blob([_workletCode], { type: 'application/javascript' });
-  const url = URL.createObjectURL(blob);
-  await _ttsAudioCtx.audioWorklet.addModule(url);
-  URL.revokeObjectURL(url);
-  _ttsPlayerNode = new AudioWorkletNode(_ttsAudioCtx, 'pcm-player-processor');
-  _ttsPlayerNode.connect(_ttsAudioCtx.destination);
-}
-
-function stopStreamingAudio() {
-  if (_ttsStreamWs) {
-    try { _ttsStreamWs.close(); } catch(e) {}
-    _ttsStreamWs = null;
-  }
-  if (_ttsPlayerNode) {
-    _ttsPlayerNode.port.postMessage({ type: 'clear' });
-  }
-}
-
-document.getElementById('voiceToggle').addEventListener('click', function() {
-  _voiceMode = !_voiceMode;
-  this.classList.toggle('active', _voiceMode);
-  this.title = _voiceMode ? 'Voice mode ON' : 'Voice mode: read response aloud';
-  if (!_voiceMode) {
-    if (_ttsStreamWs) stopActiveChatResponse('Voice response stopped.');
-    else stopStreamingAudio();
-  }
-});
-
-/* Override sendChat when voice mode is on */
-const _origSendChat = sendChat;
-
-async function sendChatVoice() {
-  if (!currentWorkspaceId) return;
-  if (chatRequestActive()) return;
-  const input = chatInputEl;
-  const draftText = input.value;
-  const question = draftText.trim();
-  if (!question) return;
-  if (!currentChatSessionId) {
-    await createChatSession({ quiet: true, skipFocus: true });
-    input.value = draftText;
-  }
-  const contextSelection = currentChatContextSelection();
-  setChatComposeWarning('');
-  const container = chatMessagesEl;
-  const userMessage = { role: 'user', content: question };
-  appendChatMessageToHistory(userMessage);
-  renderChatMessagePayload(userMessage);
-  input.value = '';
-  removeStoredJSON(chatDraftStorageKey(currentWorkspaceId, currentChatSessionId));
-  setChatHistoryStatus('Sending your message to llm-runner with voice playback...');
-
-  const assistantEl = addChatMessage('assistant', '');
-  assistantEl.classList.add('streaming');
-  const contentEl = assistantEl.querySelector('.msg-content');
-  let fullText = '';
-  let assistantCommitted = false;
-
-  stopStreamingAudio();
-
-  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-  const ws = new WebSocket(proto + '//' + location.host + '/ws/tts-stream');
-  _ttsStreamWs = ws;
-  syncChatControlState();
-
-  ws.onopen = function() {
-    ws.send(JSON.stringify(Object.assign({
-      action: 'start_chat',
-      workspace_id: currentWorkspaceId,
-      chat_session_id: currentChatSessionId,
-      messages: currentChatMessages
-    }, contextSelection)));
-  };
-
-  ws.onmessage = async function(event) {
-    if (typeof event.data === 'string') {
-      const msg = JSON.parse(event.data);
-      switch (msg.type) {
-        case 'audio_config':
-          await initStreamingAudio(msg.sample_rate);
-          await _ttsAudioCtx.resume();
-          break;
-        case 'token':
-          fullText += msg.text;
-          contentEl.textContent = fullText;
-          scrollChat();
-          break;
-        case 'sentence':
-          break;
-        case 'warning':
-          var warn = document.createElement('div');
-          warn.className = 'chat-msg warning';
-          warn.textContent = msg.message;
-          container.insertBefore(warn, assistantEl);
-          if (msg.message) setChatHistoryStatus(msg.message);
-          break;
-        case 'done':
-          assistantEl.classList.remove('streaming');
-          const finalText = (msg.message && msg.message.content) || msg.full_text || fullText;
-          if (msg.message && msg.message.content_html != null) {
-            if (msg.message.id != null) assistantEl.dataset.chatMessageId = String(msg.message.id);
-            contentEl.innerHTML = msg.message.content_html;
-          } else {
-            contentEl.textContent = finalText;
-          }
-          if (finalText && !assistantCommitted) {
-            appendChatMessageToHistory({ role: 'assistant', content: finalText });
-            assistantCommitted = true;
-          }
-          try {
-            await loadChatSessions(true, currentChatSessionId, { skipOpen: true });
-          } catch (refreshErr) {}
-          setChatHistoryStatus(chatRunnerStatusText(Object.assign({ type: 'done' }, msg)));
-          break;
-        case 'error':
-          assistantEl.classList.remove('streaming');
-          if (fullText.trim()) {
-            contentEl.textContent = fullText;
-            if (!assistantCommitted) {
-              appendChatMessageToHistory({ role: 'assistant', content: fullText });
-              assistantCommitted = true;
-            }
-          } else {
-            contentEl.textContent = 'Error: ' + msg.message;
-          }
-          if (currentChatSessionId) {
-            await loadChatSessions(true, currentChatSessionId, { skipOpen: true }).catch(function() {});
-          }
-          setChatHistoryStatus(msg.message || 'Chat failed.');
-          break;
-      }
-    } else {
-      /* Binary: raw PCM audio */
-      if (_ttsPlayerNode) {
-        _ttsPlayerNode.port.postMessage(event.data);
-      }
-    }
-  };
-
-  ws.onerror = function() {
-    assistantEl.classList.remove('streaming');
-    if (!fullText) contentEl.textContent = 'Error: WebSocket connection failed';
-    setChatHistoryStatus('WebSocket connection failed');
-  };
-
-  ws.onclose = async function() {
-    _ttsStreamWs = null;
-    assistantEl.classList.remove('streaming');
-    if (!assistantCommitted && fullText.trim()) {
-      appendChatMessageToHistory({ role: 'assistant', content: fullText });
-      assistantCommitted = true;
-      contentEl.textContent = fullText;
-    }
-    if (!assistantCommitted && !fullText.trim() && document.body.contains(assistantEl)) {
-      assistantEl.remove();
-    }
-    if (currentChatSessionId) {
-      await loadChatSessions(true, currentChatSessionId, { skipOpen: true }).catch(function() {});
-    }
-    syncChatControlState();
-    input.focus();
-  };
-}
-
-/* Patch sendChat to route through voice mode when active */
-sendChat = function() {
-  if (_voiceMode) return sendChatVoice();
-  return _origSendChat();
-};
 
 /* --- Live Transcribe --- */
 let liveWs = null;
