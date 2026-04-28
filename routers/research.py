@@ -14,6 +14,11 @@ from starlette.responses import StreamingResponse
 
 from models import ResearchRefineRequest, ResearchRequest
 from services import chat_svc as _chat_svc
+from services import research_svc as _research_svc
+from services.documents_svc import (
+    retrieve_document_evidence as _retrieve_document_evidence,
+    retrieve_meeting_evidence as _retrieve_meeting_evidence,
+)
 from services.research_svc import serialize_research_row as _serialize_research_row
 from services.text_svc import _excerpt_text, _json_line, _render_markdown_html
 from services.workspace_svc import _ensure_user_workspace
@@ -101,11 +106,8 @@ async def batch_delete_research_sessions(request: Request, workspace_id: int, bo
 
 @router.post("/workspaces/{workspace_id}/research/refine")
 async def refine_research_question(request: Request, workspace_id: int, body: ResearchRefineRequest):
-    from main_live import (
-        _generate_research_refinement_questions,
-        _suggest_related_research_sessions, _suggest_refinement_prefill,
-    )
     await _ensure_user_workspace(request, workspace_id)
+    pool = request.app.state.db_pool
     topic = body.topic.strip()
     if not topic:
         raise HTTPException(status_code=400, detail="topic is required")
@@ -114,7 +116,7 @@ async def refine_research_question(request: Request, workspace_id: int, body: Re
     document_manifest: list[dict[str, Any]] = []
     if body.document_ids:
         try:
-            async with request.app.state.db_pool.acquire() as conn:
+            async with pool.acquire() as conn:
                 doc_rows = await conn.fetch(
                     "SELECT id, filename, executive_summary FROM documents WHERE workspace_id = $1 AND id = ANY($2::int[])",
                     workspace_id, [int(d) for d in body.document_ids],
@@ -125,7 +127,7 @@ async def refine_research_question(request: Request, workspace_id: int, body: Re
             pass
     if body.meeting_ids:
         try:
-            async with request.app.state.db_pool.acquire() as conn:
+            async with pool.acquire() as conn:
                 mtg_rows = await conn.fetch(
                     "SELECT id, title, summary FROM meetings WHERE workspace_id = $1 AND id = ANY($2::int[])",
                     workspace_id, [int(m) for m in body.meeting_ids],
@@ -134,7 +136,7 @@ async def refine_research_question(request: Request, workspace_id: int, body: Re
                 document_manifest.append({"id": row["id"], "type": "meeting", "title": row["title"], "summary": _excerpt_text(row["summary"], 200)})
         except Exception:
             pass
-    result, meta = await _generate_research_refinement_questions(
+    result, meta = await _research_svc.generate_research_refinement_questions(
         workspace_id,
         topic,
         mode,
@@ -143,7 +145,7 @@ async def refine_research_question(request: Request, workspace_id: int, body: Re
     )
     result["llm_provider"] = meta.get("provider")
     result["llm_model"] = meta.get("model")
-    related = await _suggest_related_research_sessions(workspace_id, topic)
+    related = await _research_svc.suggest_related_research_sessions(pool, workspace_id, topic)
     context_lines = []
     for item in related[:4]:
         if item.get("score", 0) <= 0:
@@ -160,7 +162,8 @@ async def refine_research_question(request: Request, workspace_id: int, body: Re
             summary = item.get("summary") or ""
             manifest_lines.append(f"[{label}: {name}]\n{summary}" if summary else f"[{label}: {name}]")
         context_lines.insert(0, "Selected source documents:\n" + "\n".join(manifest_lines))
-    prefill_state = await _suggest_refinement_prefill(
+    prefill_state = await _research_svc.suggest_refinement_prefill(
+        pool,
         workspace_id,
         topic,
         mode,
@@ -175,14 +178,8 @@ async def refine_research_question(request: Request, workspace_id: int, body: Re
 
 @router.post("/workspaces/{workspace_id}/research")
 async def create_research_session(request: Request, workspace_id: int, body: ResearchRequest):
-    from main_live import (
-        _create_research_session,
-        _update_research_session, _build_research_refinement_contract,
-        _normalize_research_refinement, _retrieve_document_evidence,
-        _retrieve_meeting_evidence, _retrieve_research_evidence,
-        _run_deep_research, _run_quick_research,
-    )
     await _ensure_user_workspace(request, workspace_id)
+    pool = request.app.state.db_pool
     mode = (body.mode or "quick").strip().lower()
     if mode not in ("quick", "deep"):
         raise HTTPException(status_code=400, detail="mode must be 'quick' or 'deep'")
@@ -190,7 +187,8 @@ async def create_research_session(request: Request, workspace_id: int, body: Res
     if not topic:
         raise HTTPException(status_code=400, detail="topic is required")
 
-    research_id = await _create_research_session(
+    research_id = await _research_svc.create_research_session(
+        pool,
         workspace_id,
         topic,
         mode,
@@ -201,16 +199,17 @@ async def create_research_session(request: Request, workspace_id: int, body: Res
         yield json.dumps({"research_id": research_id, "status": f"Starting {mode} research..."}) + "\n"
         try:
             refinement_contract = None
-            normalized_refinement = _normalize_research_refinement(body.refinement)
+            normalized_refinement = _research_svc._normalize_research_refinement(body.refinement)
             if normalized_refinement:
                 yield json.dumps({"status": "Refining research brief..."}) + "\n"
-                refinement_contract, refine_meta = await _build_research_refinement_contract(
+                refinement_contract, refine_meta = await _research_svc.build_research_refinement_contract(
                     workspace_id,
                     topic,
                     body.research_type,
                     normalized_refinement,
                 )
-                await _update_research_session(
+                await _research_svc.update_research_session(
+                    pool,
                     research_id,
                     refinement=refinement_contract,
                     llm_provider=refine_meta.get("provider"),
@@ -223,19 +222,19 @@ async def create_research_session(request: Request, workspace_id: int, body: Res
                 yield json.dumps({"status": "Retrieving evidence from selected sources..."}) + "\n"
             if body.document_ids:
                 try:
-                    doc_ev = await _retrieve_document_evidence(workspace_id, body.document_ids, topic)
+                    doc_ev = await _retrieve_document_evidence(pool, workspace_id, body.document_ids, topic)
                     document_evidence.extend(doc_ev)
                 except Exception as exc:
                     logger.warning("Research document evidence retrieval failed: %s", exc)
             if body.meeting_ids:
                 try:
-                    mtg_ev = await _retrieve_meeting_evidence(workspace_id, body.meeting_ids, topic)
+                    mtg_ev = await _retrieve_meeting_evidence(pool, workspace_id, body.meeting_ids, topic)
                     document_evidence.extend(mtg_ev)
                 except Exception as exc:
                     logger.warning("Research meeting evidence retrieval failed: %s", exc)
             if body.research_ids:
                 try:
-                    res_ev = await _retrieve_research_evidence(workspace_id, body.research_ids, topic)
+                    res_ev = await _chat_svc.retrieve_research_evidence(pool, workspace_id, body.research_ids, topic)
                     prior_research = res_ev
                 except Exception as exc:
                     logger.warning("Research prior-research retrieval failed: %s", exc)
@@ -248,7 +247,8 @@ async def create_research_session(request: Request, workspace_id: int, body: Res
 
             async def perform_research():
                 if mode == "deep":
-                    return await _run_deep_research(
+                    return await _research_svc.run_deep_research(
+                        pool,
                         workspace_id,
                         topic,
                         body.research_type,
@@ -257,7 +257,8 @@ async def create_research_session(request: Request, workspace_id: int, body: Res
                         prior_research=prior_research or None,
                         progress_callback=emit_progress,
                     )
-                return await _run_quick_research(
+                return await _research_svc.run_quick_research(
+                    pool,
                     workspace_id,
                     topic,
                     body.research_type,
@@ -280,7 +281,8 @@ async def create_research_session(request: Request, workspace_id: int, body: Res
             if meta.get("warning"):
                 yield json.dumps({"warning": meta["warning"]}) + "\n"
             yield json.dumps({"status": "Writing final report..."}) + "\n"
-            await _update_research_session(
+            await _research_svc.update_research_session(
+                pool,
                 research_id,
                 title=result["title"],
                 summary=result["summary"],
@@ -296,7 +298,7 @@ async def create_research_session(request: Request, workspace_id: int, body: Res
             if body.chat_session_id:
                 try:
                     await _chat_svc.append_chat_session_message(
-                        request.app.state.db_pool, workspace_id, body.chat_session_id, "user", topic,
+                        pool, workspace_id, body.chat_session_id, "user", topic,
                     )
                     sources_lines = []
                     for s in (result.get("sources") or [])[:10]:
@@ -309,7 +311,7 @@ async def create_research_session(request: Request, workspace_id: int, body: Res
                     sources_md = ("\n\n**Sources:**\n" + "\n".join(sources_lines)) if sources_lines else ""
                     chat_content = f"**Research: {result['title']}**\n\n{result.get('content') or result.get('summary', '')}{sources_md}"
                     await _chat_svc.append_chat_session_message(
-                        request.app.state.db_pool, workspace_id, body.chat_session_id, "assistant", chat_content,
+                        pool, workspace_id, body.chat_session_id, "assistant", chat_content,
                     )
                 except Exception as _persist_exc:
                     logger.warning("Failed to persist research result to chat session %s: %s", body.chat_session_id, _persist_exc)
@@ -323,7 +325,8 @@ async def create_research_session(request: Request, workspace_id: int, body: Res
                 }
             })
         except Exception as exc:
-            await _update_research_session(
+            await _research_svc.update_research_session(
+                pool,
                 research_id,
                 status="failed",
                 error=str(exc),

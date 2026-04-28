@@ -11,7 +11,7 @@ import logging
 import os
 import re
 from collections.abc import Awaitable, Callable
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 from urllib.parse import urlparse
 
@@ -23,6 +23,7 @@ from config import (
     DR_REFINE_GUIDANCE_PATH,
     GENERATE_TEMPLATE_CATALOG,
     QUICK_RESEARCH_ROOT,
+    RESEARCH_MATCH_STOPWORDS,
     RESEARCH_TYPE_OVERLAYS,
 )
 from services.text_svc import _excerpt_text, _render_markdown_html
@@ -493,6 +494,55 @@ def fallback_local_deep_research_result(
         "warning": "No usable web sources were found; continued with grounded local context only.",
     }
     return result, meta
+
+
+# ---------------------------------------------------------------------------
+# Term scoring / timestamp helpers (used by suggest_related_research_sessions)
+# ---------------------------------------------------------------------------
+
+
+def _tokenize_match_terms(*texts: str) -> set[str]:
+    tokens: set[str] = set()
+    for text in texts:
+        for token in re.findall(r"[a-z0-9]{4,}", (text or "").lower()):
+            if token not in RESEARCH_MATCH_STOPWORDS:
+                tokens.add(token)
+    return tokens
+
+
+def _score_term_overlap(left: str, right: str) -> int:
+    return len(_tokenize_match_terms(left) & _tokenize_match_terms(right))
+
+
+def _ensure_datetime(value: Any) -> datetime:
+    if isinstance(value, datetime):
+        return value.astimezone(timezone.utc) if value.tzinfo else value.replace(tzinfo=timezone.utc)
+    if not value:
+        return datetime.now(timezone.utc)
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        return parsed.astimezone(timezone.utc) if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+    except ValueError:
+        return datetime.now(timezone.utc)
+
+
+def _sortable_timestamp(value: Any) -> float:
+    return _ensure_datetime(value).timestamp()
+
+
+def _question_plan_context_block(question_items: list[dict[str, Any]]) -> str:
+    blocks = []
+    for item in question_items:
+        blocks.append(
+            "\n".join([
+                f'Question key: {item.get("key")}',
+                f'Label: {item.get("label")}',
+                f'Group: {item.get("group")}',
+                f'Required: {bool(item.get("required"))}',
+                f'Prompt/help: {item.get("help") or item.get("placeholder") or ""}',
+            ])
+        )
+    return "\n\n".join(blocks).strip()
 
 
 # ---------------------------------------------------------------------------
@@ -1443,3 +1493,131 @@ Return ONLY valid JSON with:
     if warnings:
         meta["warning"] = " ".join(warnings)
     return result, meta
+
+
+# ---------------------------------------------------------------------------
+# Related-session suggestion helpers
+# ---------------------------------------------------------------------------
+
+
+async def suggest_related_research_sessions(
+    pool,
+    workspace_id: int,
+    topic: str,
+    *,
+    exclude_research_id: int | None = None,
+) -> list[dict[str, Any]]:
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT rs.id, rs.title, rs.topic, rs.mode, rs.research_type, rs.status, rs.summary,
+                   rs.refinement, rs.created_at, rs.updated_at, run_meta.artifact_template
+            FROM research_sessions rs
+            LEFT JOIN LATERAL (
+                SELECT gtr.artifact_template
+                FROM generate_task_runs gtr
+                WHERE gtr.grounding_research_id = rs.id
+                ORDER BY gtr.updated_at DESC, gtr.id DESC
+                LIMIT 1
+            ) run_meta ON TRUE
+            WHERE rs.workspace_id = $1
+              AND rs.status = 'completed'
+              AND ($2::int IS NULL OR rs.id <> $2)
+            ORDER BY rs.updated_at DESC
+            """,
+            workspace_id,
+            exclude_research_id,
+        )
+    ranked = []
+    for row in rows:
+        data = serialize_research_row(row)
+        data["score"] = _score_term_overlap(
+            topic,
+            f'{data.get("title") or ""} {data.get("topic") or ""} {data.get("summary") or ""}',
+        )
+        ranked.append(data)
+    ranked.sort(
+        key=lambda item: (
+            -item["score"],
+            -_sortable_timestamp(item.get("updated_at") or item.get("created_at")),
+        )
+    )
+    return ranked
+
+
+async def suggest_refinement_prefill(
+    pool,
+    workspace_id: int,
+    topic: str,
+    mode: str,
+    research_type: str,
+    plan: dict[str, Any],
+    *,
+    context_brief: str = "",
+) -> dict[str, Any] | None:
+    from services.llm_prefs import get_workspace_llm_preferences, _resolve_task_llm  # noqa: PLC0415
+    from services.text_svc import _json_dict  # noqa: PLC0415
+    from llm import call_llm_runner_json  # noqa: PLC0415
+
+    if not plan or not (plan.get("questions") or []):
+        return None
+    preferences = await get_workspace_llm_preferences(pool, workspace_id)
+    provider, model = _resolve_task_llm(preferences, "research")
+    question_block = _question_plan_context_block(plan.get("questions") or [])
+    prompt = f"""\
+You are preparing best-guess answers for a research refinement conversation.
+
+Topic: {topic}
+Mode: {mode or "quick"}
+Research type: {research_type or "general"}
+
+Known context:
+{context_brief or "No prior context was supplied."}
+
+Refinement questions:
+{question_block}
+
+Return ONLY valid JSON with:
+- "query_type": string
+- "suggested_reframe": string
+- "answers": object keyed by question id
+
+Rules:
+- Prefill concise best guesses only when the context or clear best practice supports them.
+- For missing information, return an empty string for that question id.
+- You may use the topic itself to produce a stronger suggested_reframe.
+"""
+    try:
+        payload, _ = await call_llm_runner_json(
+            [{"role": "user", "content": prompt}],
+            provider=provider,
+            model=model,
+            use_case="chat",
+            max_tokens=1800,
+            timeout=45.0,
+        )
+    except Exception as exc:
+        logger.warning(
+            "Research refinement autofill failed for workspace %s topic %s: %s",
+            workspace_id, topic, exc,
+        )
+        return None
+    payload = _json_dict(payload)
+    if not payload:
+        return None
+    answers = []
+    raw_answers = payload.get("answers") or {}
+    if isinstance(raw_answers, dict):
+        for question in plan.get("questions") or []:
+            question_id = str(question.get("id") or "").strip()
+            if not question_id:
+                continue
+            answer_text = _excerpt_text(raw_answers.get(question_id), 1200)
+            if not answer_text:
+                continue
+            answers.append({"id": question_id, "answer": answer_text})
+    return {
+        "query_type": str(payload.get("query_type") or plan.get("inferred_query_type") or "").strip().upper() or None,
+        "suggested_reframe": _excerpt_text(payload.get("suggested_reframe") or plan.get("suggested_reframe"), 1000),
+        "answers": answers,
+    }
