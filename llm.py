@@ -354,3 +354,11 @@ async def _call_llm_runner_json(
             )
             raise ValueError("Model response did not contain valid JSON after one repair attempt.") from repair_exc
 
+
+# Public alias used by services that import without underscore prefix
+call_llm_runner_json = _call_llm_runner_json
+
+
+async def _llm_runner_proxy_get(path: str) -> Any:
+    """Proxy a GET request to the LLM runner service."""
+    return await llm_runner_service.get_json(path, timeout=30.0)

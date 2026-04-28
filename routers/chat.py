@@ -19,6 +19,7 @@ from models import (
     ChatRenderRequest, ChatRequest, ChatSessionCreateRequest,
     ChatSessionUpdateRequest, ChatTurnProxyRequest,
 )
+from llm import _call_llm_runner, _llm_runner_proxy_get, _stream_llm_runner
 from services import chat_svc as _chat_svc
 from services.llm_prefs import _resolve_task_llm
 from services.llm_prefs_svc import _get_workspace_llm_preferences
@@ -35,13 +36,11 @@ logger = logging.getLogger("meeting-analyzer")
 
 @router.get("/v1/runtime/assignments")
 async def proxy_runtime_assignments(request: Request):
-    from main_live import _llm_runner_proxy_get
     return await _llm_runner_proxy_get("/v1/runtime/assignments")
 
 
 @router.get("/v1/skills")
 async def proxy_skill_catalog(request: Request):
-    from main_live import _llm_runner_proxy_get
     return await _llm_runner_proxy_get("/v1/skills")
 
 
@@ -51,7 +50,6 @@ async def proxy_skill_catalog(request: Request):
 
 @router.post("/v1/chat/turn")
 async def proxy_chat_turn(request: Request, body: ChatTurnProxyRequest):
-    from main_live import _call_llm_runner
     if body.workspace_id is not None:
         await _ensure_user_workspace(request, body.workspace_id)
     if body.workspace_id is not None and body.attachment_ids:
@@ -151,7 +149,6 @@ async def proxy_chat_turn(request: Request, body: ChatTurnProxyRequest):
 
 @router.post("/v1/chat/turn/stream")
 async def proxy_chat_turn_stream(body: ChatTurnProxyRequest, request: Request):
-    from main_live import _stream_llm_runner
     if body.workspace_id is not None:
         await _ensure_user_workspace(request, body.workspace_id)
     if body.workspace_id is not None and body.attachment_ids:
@@ -554,7 +551,6 @@ async def render_markdown(body: ChatRenderRequest):
 
 @router.post("/chat")
 async def chat(request: Request, body: ChatRequest):
-    from main_live import _stream_llm_runner
     if body.workspace_id is None:
         raise HTTPException(status_code=400, detail="workspace_id is required.")
     if body.chat_session_id is None:

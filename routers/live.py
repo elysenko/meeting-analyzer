@@ -24,6 +24,7 @@ from config import (
     LIVEKIT_API_KEY, LIVEKIT_API_SECRET, LIVEKIT_INTERNAL_URL,
     LIVEKIT_WS_URL, WHISPER_LIVE_URL,
 )
+from llm import _stream_llm_runner
 from models import AnalyzeTextRequest, LiveQARequest
 from services.documents_svc import retrieve_document_evidence as _retrieve_document_evidence
 from services.documents_svc import retrieve_meeting_evidence as _retrieve_meeting_evidence
@@ -56,7 +57,6 @@ LIVE_QA_LOW_CONFIDENCE_PROMPT = (
 
 @router.post("/workspaces/{workspace_id}/live-qa")
 async def post_live_qa(request: Request, workspace_id: int, body: LiveQARequest):
-    from main_live import _stream_llm_runner
     await _ensure_user_workspace(request, workspace_id)
     question = (body.question or "").strip()
     if not question:
