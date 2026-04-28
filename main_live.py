@@ -7405,17 +7405,10 @@ Return ONLY valid JSON with:
         src["id"] = f"S{idx}"
 
     if not sources:
-        local_result, local_meta = _fallback_local_quick_research_result(
-            effective_topic,
-            research_type,
-            task_brief=task_brief,
-            document_evidence=document_evidence,
-            prior_research=prior_research,
+        raise RuntimeError(
+            "Web search returned no usable sources. "
+            "Try including a specific URL in your query, or paste the source text directly into the chat."
         )
-        local_result["refinement"] = refinement_contract
-        if progress_callback:
-            await progress_callback("No usable web sources were found; grounding the draft from local context only...")
-        return local_result, local_meta
 
     synth_prompt = f"""\
 You are finishing the quick research skill.
