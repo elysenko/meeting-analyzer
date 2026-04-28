@@ -57,12 +57,12 @@ try:
 except ImportError:
     pass
 
-WHISPER_URL = os.getenv("WHISPER_URL", "http://whisper:9000")
-WHISPER_LIVE_URL = os.getenv("WHISPER_LIVE_URL", "ws://whisper-live:9090")
+WHISPER_URL = os.getenv("WHISPER_URL", "http://whisper.whisper.svc.cluster.local:9000")
+WHISPER_LIVE_URL = os.getenv("WHISPER_LIVE_URL", "ws://whisper-live.whisper.svc.cluster.local:9090")
 WHISPER_CHUNK_SECONDS = int(os.getenv("WHISPER_CHUNK_SECONDS", "600"))
 WHISPER_CHUNK_SIZE_MB = int(os.getenv("WHISPER_CHUNK_SIZE_MB", "32"))
 WHISPER_RETRY_COUNT = int(os.getenv("WHISPER_RETRY_COUNT", "2"))
-PIPER_TTS_URL = os.getenv("PIPER_TTS_URL", "http://piper-tts:5000")
+PIPER_TTS_URL = os.getenv("PIPER_TTS_URL", "http://piper-tts.whisper.svc.cluster.local:5000")
 LLM_RUNNER_URL = os.getenv("LLM_RUNNER_URL", "http://llm-runner-dev.aion.svc.cluster.local:8000")
 CLAUDE_API_KEY = os.getenv("CLAUDE_API_KEY", "")
 PIPER_MODEL_PATH = os.getenv("PIPER_MODEL_PATH", "/models/en_US-lessac-medium.onnx")
@@ -295,11 +295,51 @@ async def _init_minio():
         minio_client = None
 
 
+async def _check_service_dns() -> None:
+    """Attempt DNS resolution for every critical service URL at startup.
+
+    Logs INFO on success and WARNING on failure.  Intentionally non-fatal so a
+    misconfigured URL surfaces in logs without triggering a restart loop (which a
+    failing liveness probe would cause).  Short names only resolve inside the same
+    namespace — cross-namespace services must use FQDNs
+    (service.namespace.svc.cluster.local).
+    """
+    import socket
+
+    service_urls: dict[str, str] = {
+        "WHISPER_URL": WHISPER_URL,
+        "WHISPER_LIVE_URL": WHISPER_LIVE_URL,
+        "PIPER_TTS_URL": PIPER_TTS_URL,
+        "LLM_RUNNER_URL": LLM_RUNNER_URL,
+    }
+    for name, url in service_urls.items():
+        try:
+            from urllib.parse import urlparse as _urlparse
+            host = _urlparse(url).hostname
+            if not host:
+                logger.warning("DNS check: %s=%r has no hostname — skipping", name, url)
+                continue
+            await asyncio.to_thread(socket.getaddrinfo, host, None)
+            logger.info("DNS OK: %s → %s", name, host)
+        except OSError:
+            logger.warning(
+                "DNS FAIL at startup: %s=%r — hostname %r does not resolve. "
+                "Verify the env var uses a fully-qualified cluster DNS name "
+                "(service.namespace.svc.cluster.local).",
+                name,
+                url,
+                host,
+            )
+        except Exception as _exc:
+            logger.warning("DNS check error for %s=%r: %s", name, url, _exc)
+
+
 @asynccontextmanager
 async def lifespan(app):
     global piper_voice
     await init_db()
     await _init_minio()
+    await _check_service_dns()
     asyncio.create_task(_backfill_meeting_chunks())
     asyncio.create_task(_backfill_document_processing())
     asyncio.create_task(_upload_job_worker())
