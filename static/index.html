@@ -5505,11 +5505,10 @@ function resetChatThread() {
   scrollChat();
 }
 
-function renderChatMessagePayload(message) {
-  const container = document.getElementById('chatMessages');
-  if (!container || !message) return null;
-  const emptyEl = container.querySelector('.chat-empty');
-  if (emptyEl) emptyEl.remove();
+/* Build a single chat message DOM element without touching the live container.
+   Called by renderChatMessagePayload (single) and renderChatMessageBatch (bulk). */
+function _buildChatMessageElement(message) {
+  if (!message) return null;
   const div = document.createElement('div');
   div.className = 'chat-msg ' + (message.role || 'assistant');
   if (message.id != null) div.dataset.chatMessageId = String(message.id);
@@ -5522,7 +5521,6 @@ function renderChatMessagePayload(message) {
   if (message.role === 'assistant' && message.content_html != null) {
     contentEl.innerHTML = message.content_html;
   } else if (Array.isArray(message.content)) {
-    /* Multimodal content blocks: render images + text */
     message.content.forEach(function(block) {
       if (block.type === 'image' && block.source && block.source.data) {
         var img = document.createElement('img');
@@ -5539,7 +5537,6 @@ function renderChatMessagePayload(message) {
   } else {
     contentEl.textContent = message.content || '';
   }
-  /* Inline attachment chips for user messages */
   if (message.role === 'user' && message.attachment_ids && message.attachment_ids.length) {
     var attChips = document.createElement('div');
     attChips.className = 'msg-attachment-chips';
@@ -5553,9 +5550,38 @@ function renderChatMessagePayload(message) {
     div.appendChild(attChips);
   }
   div.appendChild(contentEl);
+  return div;
+}
+
+/* Render a single message and scroll — used for live/incoming messages. */
+function renderChatMessagePayload(message) {
+  const container = document.getElementById('chatMessages');
+  if (!container || !message) return null;
+  const emptyEl = container.querySelector('.chat-empty');
+  if (emptyEl) emptyEl.remove();
+  const div = _buildChatMessageElement(message);
+  if (!div) return null;
   container.appendChild(div);
   scrollChat();
   return div;
+}
+
+/* Render a full message history in one DOM operation to avoid N reflows.
+   Used when loading a session — appends all elements via DocumentFragment,
+   removes the empty-state placeholder once, and scrolls once at the end. */
+function renderChatMessageBatch(messages) {
+  const container = document.getElementById('chatMessages');
+  if (!container) return;
+  const emptyEl = container.querySelector('.chat-empty');
+  if (emptyEl) emptyEl.remove();
+  if (!messages || !messages.length) return;
+  const fragment = document.createDocumentFragment();
+  messages.forEach(function(message) {
+    const el = _buildChatMessageElement(message);
+    if (el) fragment.appendChild(el);
+  });
+  container.appendChild(fragment);
+  scrollChat();
 }
 
 function setChatComposeWarning(message) {
@@ -5650,9 +5676,7 @@ async function openChatSession(sessionId, _preloadedPayload) {
   }).filter(function(message) {
     return message.role === 'user' || message.role === 'assistant';
   });
-  (payload.messages || []).forEach(function(message) {
-    renderChatMessagePayload(message);
-  });
+  renderChatMessageBatch(payload.messages || []);
   restoreContextSelection(payload.session);
   restoreContextPanelState();
   restoreChatDraft();
