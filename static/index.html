@@ -5287,6 +5287,11 @@ function chatRequestActive() {
   return !!activeChatRequestController;
 }
 
+function _maybeNotify(title, body) {
+  if (document.visibilityState === 'visible') return;
+  sendBrowserNotification(title, body);
+}
+
 function setChatSessionMeta(session) {
   const el = document.getElementById('chatSessionMeta');
   const renameBtn = document.getElementById('chatRenameBtn');
@@ -12565,6 +12570,10 @@ async function sendChat() {
   const draftText = input.value;
   const question = draftText.trim();
   if (!question) return;
+  /* Request notification permission on first send while the tab is still visible */
+  if (typeof Notification !== 'undefined' && Notification.permission === 'default') {
+    Notification.requestPermission();
+  }
   /* Route to document generator when the user clearly asks for a file */
   var _docFmt = null;
   if (/\b(slides?|deck|presentation|pptx)\b/i.test(question)) {
@@ -12657,6 +12666,7 @@ async function sendChat() {
       ? (usageInfo.input_tokens || 0) + ' in / ' + (usageInfo.output_tokens || 0) + ' out'
       : '';
     setChatHistoryStatus((tokenStr || 'Done.') + _srcLabel);
+    _maybeNotify('Chat response ready', responseText ? responseText.slice(0, 100) : 'Your response is ready.');
   } catch (err) {
     if (thinkingEl) thinkingEl.remove();
     const aborted = controller.signal.aborted || (err && err.name === 'AbortError');
@@ -12742,6 +12752,7 @@ async function sendChatDocument(question, format) {
           if (event.message && event.message.id != null) statusEl.dataset.chatMessageId = String(event.message.id);
           if (event.message && event.message.content) appendChatMessageToHistory({ role: 'assistant', content: event.message.content });
           setChatHistoryStatus(fmtLabel + ' ready.');
+          _maybeNotify(fmtLabel + ' ready', 'Your ' + fmtLabel + ' is ready to download.');
         } else if (event.type === 'error') {
           statusEl.classList.remove('streaming');
           contentEl.textContent = 'Error: ' + (event.content || fmtLabel + ' generation failed.');
