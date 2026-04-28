@@ -32,7 +32,7 @@ from services.utils import _json_line
 from main_live import (  # noqa: E402
     admin_backfill_office_ocr as _ml_admin_backfill_office_ocr,
     canvas_connect as _ml_canvas_connect,
-    canvas_courses as _ml_canvas_courses,
+    canvas_list_courses as _ml_canvas_courses,
     canvas_status as _ml_canvas_status,
     drive_callback as _ml_drive_callback,
     drive_files as _ml_drive_files,
