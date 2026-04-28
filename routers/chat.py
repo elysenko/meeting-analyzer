@@ -19,6 +19,10 @@ from models import (
     ChatRenderRequest, ChatRequest, ChatSessionCreateRequest,
     ChatSessionUpdateRequest, ChatTurnProxyRequest,
 )
+from services import chat_svc as _chat_svc
+from services.llm_prefs import _resolve_task_llm
+from services.llm_prefs_svc import _get_workspace_llm_preferences
+from services.text_svc import _json_default, _json_line, _render_markdown_html
 from services.workspace_svc import _ensure_user_workspace
 
 router = APIRouter()
@@ -47,10 +51,7 @@ async def proxy_skill_catalog(request: Request):
 
 @router.post("/v1/chat/turn")
 async def proxy_chat_turn(request: Request, body: ChatTurnProxyRequest):
-    from main_live import (
-        _prepare_chat_turn_request,
-        _append_chat_session_message, _call_llm_runner,
-    )
+    from main_live import _call_llm_runner
     if body.workspace_id is not None:
         await _ensure_user_workspace(request, body.workspace_id)
     if body.workspace_id is not None and body.attachment_ids:
@@ -62,7 +63,9 @@ async def proxy_chat_turn(request: Request, body: ChatTurnProxyRequest):
                     att_ids, body.workspace_id,
                 )
 
-    prepared = await _prepare_chat_turn_request(
+    pool = request.app.state.db_pool
+    prepared = await _chat_svc.prepare_chat_turn_request(
+        pool,
         workspace_id=body.workspace_id,
         chat_session_id=body.chat_session_id,
         message=body.message,
@@ -78,8 +81,10 @@ async def proxy_chat_turn(request: Request, body: ChatTurnProxyRequest):
     warned = prepared["warned"]
     latest_user_message = prepared["latest_user_message"]
     if body.workspace_id is not None and body.chat_session_id is not None and latest_user_message:
-        await _append_chat_session_message(body.workspace_id, body.chat_session_id, "user", latest_user_message,
-                                           attachment_ids=body.attachment_ids or [])
+        await _chat_svc.append_chat_session_message(
+            pool, body.workspace_id, body.chat_session_id, "user", latest_user_message,
+            attachment_ids=body.attachment_ids or [],
+        )
 
     _is_qa_mode = bool((body.system or "").strip() and body.chat_session_id is None)
     _use_case = "voice" if _is_qa_mode else "chat"
@@ -121,7 +126,8 @@ async def proxy_chat_turn(request: Request, body: ChatTurnProxyRequest):
 
     stored_message = None
     if body.workspace_id is not None and body.chat_session_id is not None and result.get("content", "").strip():
-        stored_message = await _append_chat_session_message(
+        stored_message = await _chat_svc.append_chat_session_message(
+            pool,
             body.workspace_id,
             body.chat_session_id,
             "assistant",
@@ -145,10 +151,7 @@ async def proxy_chat_turn(request: Request, body: ChatTurnProxyRequest):
 
 @router.post("/v1/chat/turn/stream")
 async def proxy_chat_turn_stream(body: ChatTurnProxyRequest, request: Request):
-    from main_live import (
-        _prepare_chat_turn_request,
-        _append_chat_session_message, _stream_llm_runner,
-    )
+    from main_live import _stream_llm_runner
     if body.workspace_id is not None:
         await _ensure_user_workspace(request, body.workspace_id)
     if body.workspace_id is not None and body.attachment_ids:
@@ -159,7 +162,9 @@ async def proxy_chat_turn_stream(body: ChatTurnProxyRequest, request: Request):
                     "UPDATE chat_session_attachments SET activated = TRUE WHERE id = ANY($1::int[]) AND workspace_id = $2",
                     att_ids, body.workspace_id,
                 )
-    prepared = await _prepare_chat_turn_request(
+    pool = request.app.state.db_pool
+    prepared = await _chat_svc.prepare_chat_turn_request(
+        pool,
         workspace_id=body.workspace_id,
         chat_session_id=body.chat_session_id,
         message=body.message,
@@ -175,8 +180,10 @@ async def proxy_chat_turn_stream(body: ChatTurnProxyRequest, request: Request):
     warned = prepared["warned"]
     latest_user_message = prepared["latest_user_message"]
     if body.workspace_id is not None and body.chat_session_id is not None and latest_user_message:
-        await _append_chat_session_message(body.workspace_id, body.chat_session_id, "user", latest_user_message,
-                                           attachment_ids=body.attachment_ids or [])
+        await _chat_svc.append_chat_session_message(
+            pool, body.workspace_id, body.chat_session_id, "user", latest_user_message,
+            attachment_ids=body.attachment_ids or [],
+        )
 
     async def stream():
         assistant_text = ""
@@ -208,9 +215,14 @@ async def proxy_chat_turn_stream(body: ChatTurnProxyRequest, request: Request):
         except asyncio.CancelledError:
             if body.workspace_id is not None and body.chat_session_id is not None and assistant_text.strip():
                 try:
-                    await _append_chat_session_message(body.workspace_id, body.chat_session_id, "assistant", assistant_text)
+                    await _chat_svc.append_chat_session_message(
+                        pool, body.workspace_id, body.chat_session_id, "assistant", assistant_text,
+                    )
                 except Exception:
-                    logger.warning("Failed to persist interrupted assistant message for workspace %s session %s", body.workspace_id, body.chat_session_id)
+                    logger.warning(
+                        "Failed to persist interrupted assistant message for workspace %s session %s",
+                        body.workspace_id, body.chat_session_id,
+                    )
             raise
         except Exception as exc:
             error_event = {"type": "error", "content": str(exc)}
@@ -219,7 +231,9 @@ async def proxy_chat_turn_stream(body: ChatTurnProxyRequest, request: Request):
 
         stored_message = None
         if body.workspace_id is not None and body.chat_session_id is not None and assistant_text.strip():
-            stored_message = await _append_chat_session_message(body.workspace_id, body.chat_session_id, "assistant", assistant_text)
+            stored_message = await _chat_svc.append_chat_session_message(
+                pool, body.workspace_id, body.chat_session_id, "assistant", assistant_text,
+            )
         done_payload = done_event or {"type": "done", "content": assistant_text}
         if stored_message is not None:
             done_payload["message"] = stored_message
@@ -241,68 +255,67 @@ async def proxy_chat_turn_stream(body: ChatTurnProxyRequest, request: Request):
 
 @router.get("/workspaces/{workspace_id}/chat/history")
 async def get_workspace_chat_history(request: Request, workspace_id: int):
-    from main_live import (
-        _get_latest_workspace_chat_session,
-        _create_workspace_chat_session, _list_chat_session_messages,
-    )
     await _ensure_user_workspace(request, workspace_id)
-    session = await _get_latest_workspace_chat_session(workspace_id)
+    pool = request.app.state.db_pool
+    session = await _chat_svc.get_latest_workspace_chat_session(pool, workspace_id)
     if not session:
-        session = await _create_workspace_chat_session(workspace_id)
+        session = await _chat_svc.create_workspace_chat_session(pool, workspace_id)
     return {
         "session": session,
-        "messages": await _list_chat_session_messages(workspace_id, session["id"]),
+        "messages": await _chat_svc.list_chat_session_messages(pool, workspace_id, session["id"]),
     }
 
 
 @router.delete("/workspaces/{workspace_id}/chat/history")
 async def clear_workspace_chat_history(request: Request, workspace_id: int):
-    from main_live import _delete_all_workspace_chat_sessions
     await _ensure_user_workspace(request, workspace_id)
-    await _delete_all_workspace_chat_sessions(workspace_id)
+    await _chat_svc.delete_all_workspace_chat_sessions(request.app.state.db_pool, workspace_id)
     return {"ok": True}
 
 
 @router.get("/workspaces/{workspace_id}/chat/sessions")
 async def list_workspace_chat_sessions(request: Request, workspace_id: int):
-    from main_live import _list_workspace_chat_sessions
     await _ensure_user_workspace(request, workspace_id)
-    return await _list_workspace_chat_sessions(workspace_id)
+    return await _chat_svc.list_workspace_chat_sessions(request.app.state.db_pool, workspace_id)
 
 
 @router.post("/workspaces/{workspace_id}/chat/sessions")
-async def create_workspace_chat_session(request: Request, workspace_id: int, body: ChatSessionCreateRequest | None = None):
-    from main_live import _create_workspace_chat_session
+async def create_workspace_chat_session(
+    request: Request, workspace_id: int, body: ChatSessionCreateRequest | None = None,
+):
     await _ensure_user_workspace(request, workspace_id)
-    return await _create_workspace_chat_session(workspace_id, (body.title if body else None))
+    return await _chat_svc.create_workspace_chat_session(
+        request.app.state.db_pool, workspace_id, (body.title if body else None),
+    )
 
 
 @router.get("/workspaces/{workspace_id}/chat/sessions/{session_id}")
 async def get_workspace_chat_session(request: Request, workspace_id: int, session_id: int):
-    from main_live import (
-        _get_workspace_chat_session,
-        _list_chat_session_messages,
-    )
     await _ensure_user_workspace(request, workspace_id)
-    session = await _get_workspace_chat_session(workspace_id, session_id)
+    pool = request.app.state.db_pool
+    session = await _chat_svc.get_workspace_chat_session(pool, workspace_id, session_id)
     return {
         "session": session,
-        "messages": await _list_chat_session_messages(workspace_id, session_id),
+        "messages": await _chat_svc.list_chat_session_messages(pool, workspace_id, session_id),
     }
 
 
 @router.patch("/workspaces/{workspace_id}/chat/sessions/{session_id}")
-async def update_workspace_chat_session(request: Request, workspace_id: int, session_id: int, body: ChatSessionUpdateRequest):
-    from main_live import _update_workspace_chat_session
+async def update_workspace_chat_session(
+    request: Request, workspace_id: int, session_id: int, body: ChatSessionUpdateRequest,
+):
     await _ensure_user_workspace(request, workspace_id)
-    return await _update_workspace_chat_session(workspace_id, session_id, body)
+    return await _chat_svc.update_workspace_chat_session(
+        request.app.state.db_pool, workspace_id, session_id, body,
+    )
 
 
 @router.delete("/workspaces/{workspace_id}/chat/sessions/{session_id}")
 async def delete_workspace_chat_session(request: Request, workspace_id: int, session_id: int):
-    from main_live import _delete_workspace_chat_session
     await _ensure_user_workspace(request, workspace_id)
-    await _delete_workspace_chat_session(workspace_id, session_id)
+    await _chat_svc.delete_workspace_chat_session(
+        request.app.state.db_pool, workspace_id, session_id,
+    )
     return {"ok": True}
 
 
@@ -332,11 +345,9 @@ async def upload_chat_attachment(
     session_id: int,
     file: UploadFile = File(...),
 ):
-    from main_live import (
-        _get_workspace_chat_session, _extract_text_sync,
-    )
+    from main_live import _extract_text_sync
     await _ensure_user_workspace(request, workspace_id)
-    await _get_workspace_chat_session(workspace_id, session_id)
+    await _chat_svc.get_workspace_chat_session(request.app.state.db_pool, workspace_id, session_id)
     data = await file.read()
     filename = file.filename or "attachment"
     mime_type = file.content_type or ""
@@ -402,15 +413,13 @@ async def chat_generate_document(
     format: str = "pdf",
 ):
     """Generate a document (pdf/docx/pptx) from a chat prompt and stream progress events."""
-    from main_live import (
-        _prepare_chat_turn_request,
-        _append_chat_session_message, _generate_structured_document,
-        _json_default,
-    )
+    from main_live import _generate_structured_document
     fmt = format.strip().lower()
     if fmt not in ("pdf", "docx", "pptx"):
         fmt = "pdf"
     await _ensure_user_workspace(request, workspace_id)
+
+    pool = request.app.state.db_pool
 
     async def _stream():
         try:
@@ -426,7 +435,8 @@ async def chat_generate_document(
 
             yield f"data: {json.dumps({'type': 'status', 'content': 'Building context...'}, ensure_ascii=False)}\n\n"
 
-            prepared = await _prepare_chat_turn_request(
+            prepared = await _chat_svc.prepare_chat_turn_request(
+                pool,
                 workspace_id=workspace_id,
                 chat_session_id=session_id,
                 message=body.message,
@@ -439,8 +449,8 @@ async def chat_generate_document(
             )
             user_text = prepared["latest_user_message"] or body.message or ""
             if user_text:
-                await _append_chat_session_message(
-                    workspace_id, session_id, "user", user_text,
+                await _chat_svc.append_chat_session_message(
+                    pool, workspace_id, session_id, "user", user_text,
                     attachment_ids=body.attachment_ids or [],
                 )
 
@@ -520,8 +530,8 @@ async def chat_generate_document(
             filename = document["filename"]
 
             assistant_content = f"Here's your document: **{filename}**\n\n[Download]({download_url})"
-            stored_msg = await _append_chat_session_message(
-                workspace_id, session_id, "assistant", assistant_content,
+            stored_msg = await _chat_svc.append_chat_session_message(
+                pool, workspace_id, session_id, "assistant", assistant_content,
             )
 
             yield f"data: {json.dumps({'type': 'done', 'document': document, 'download_url': download_url, 'filename': filename, 'format': fmt, 'message': stored_msg}, default=_json_default, ensure_ascii=False)}\n\n"
@@ -539,18 +549,12 @@ async def chat_generate_document(
 
 @router.post("/render-markdown")
 async def render_markdown(body: ChatRenderRequest):
-    from main_live import _render_markdown_html
     return {"html": _render_markdown_html(body.text)}
 
 
 @router.post("/chat")
 async def chat(request: Request, body: ChatRequest):
-    from main_live import (
-        _get_workspace_chat_session,
-        _prepare_chat_turn_request, _append_chat_session_message,
-        _list_chat_session_messages, _get_workspace_llm_preferences,
-        _resolve_task_llm, _stream_llm_runner, _json_line,
-    )
+    from main_live import _stream_llm_runner
     if body.workspace_id is None:
         raise HTTPException(status_code=400, detail="workspace_id is required.")
     if body.chat_session_id is None:
@@ -558,9 +562,12 @@ async def chat(request: Request, body: ChatRequest):
     await _ensure_user_workspace(request, body.workspace_id)
     if not body.question.strip():
         raise HTTPException(status_code=400, detail="question is required.")
-    await _get_workspace_chat_session(body.workspace_id, body.chat_session_id)
 
-    prepared = await _prepare_chat_turn_request(
+    pool = request.app.state.db_pool
+    await _chat_svc.get_workspace_chat_session(pool, body.workspace_id, body.chat_session_id)
+
+    prepared = await _chat_svc.prepare_chat_turn_request(
+        pool,
         workspace_id=body.workspace_id,
         chat_session_id=body.chat_session_id,
         message=body.question,
@@ -571,14 +578,18 @@ async def chat(request: Request, body: ChatRequest):
     )
     system_prompt = prepared["system_prompt"]
     warned = prepared["warned"]
-    await _append_chat_session_message(body.workspace_id, body.chat_session_id, "user", body.question.strip())
-    history_rows = await _list_chat_session_messages(body.workspace_id, body.chat_session_id)
+    await _chat_svc.append_chat_session_message(
+        pool, body.workspace_id, body.chat_session_id, "user", body.question.strip(),
+    )
+    history_rows = await _chat_svc.list_chat_session_messages(
+        pool, body.workspace_id, body.chat_session_id,
+    )
     history_messages = [
         {"role": item["role"], "content": item["content"]}
         for item in history_rows
         if item.get("role") in {"user", "assistant"}
     ]
-    chat_preferences = await _get_workspace_llm_preferences(body.workspace_id)
+    chat_preferences = await _get_workspace_llm_preferences(pool, body.workspace_id)
     chat_provider, chat_model = _resolve_task_llm(chat_preferences, "chat")
 
     async def stream():
@@ -605,11 +616,15 @@ async def chat(request: Request, body: ChatRequest):
                     raise RuntimeError(event.get("content") or "Unknown llm-runner error")
         except Exception as e:
             if assistant_text.strip():
-                await _append_chat_session_message(body.workspace_id, body.chat_session_id, "assistant", assistant_text)
+                await _chat_svc.append_chat_session_message(
+                    pool, body.workspace_id, body.chat_session_id, "assistant", assistant_text,
+                )
             yield json.dumps({"error": str(e)}) + "\n"
             return
 
-        stored_message = await _append_chat_session_message(body.workspace_id, body.chat_session_id, "assistant", assistant_text)
+        stored_message = await _chat_svc.append_chat_session_message(
+            pool, body.workspace_id, body.chat_session_id, "assistant", assistant_text,
+        )
         yield _json_line({"done": True, "message": stored_message})
 
     return StreamingResponse(stream(), media_type="application/x-ndjson")

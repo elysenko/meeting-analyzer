@@ -13,7 +13,9 @@ from fastapi import APIRouter, HTTPException, Request
 from starlette.responses import StreamingResponse
 
 from models import ResearchRefineRequest, ResearchRequest
+from services import chat_svc as _chat_svc
 from services.research_svc import serialize_research_row as _serialize_research_row
+from services.text_svc import _excerpt_text, _json_line, _render_markdown_html
 from services.workspace_svc import _ensure_user_workspace
 
 router = APIRouter()
@@ -100,7 +102,7 @@ async def batch_delete_research_sessions(request: Request, workspace_id: int, bo
 @router.post("/workspaces/{workspace_id}/research/refine")
 async def refine_research_question(request: Request, workspace_id: int, body: ResearchRefineRequest):
     from main_live import (
-        _excerpt_text, _generate_research_refinement_questions,
+        _generate_research_refinement_questions,
         _suggest_related_research_sessions, _suggest_refinement_prefill,
     )
     await _ensure_user_workspace(request, workspace_id)
@@ -174,12 +176,11 @@ async def refine_research_question(request: Request, workspace_id: int, body: Re
 @router.post("/workspaces/{workspace_id}/research")
 async def create_research_session(request: Request, workspace_id: int, body: ResearchRequest):
     from main_live import (
-        _ensure_user_workspace, _create_research_session,
+        _create_research_session,
         _update_research_session, _build_research_refinement_contract,
         _normalize_research_refinement, _retrieve_document_evidence,
         _retrieve_meeting_evidence, _retrieve_research_evidence,
         _run_deep_research, _run_quick_research,
-        _append_chat_session_message, _render_markdown_html, _json_line,
     )
     await _ensure_user_workspace(request, workspace_id)
     mode = (body.mode or "quick").strip().lower()
@@ -294,8 +295,8 @@ async def create_research_session(request: Request, workspace_id: int, body: Res
             )
             if body.chat_session_id:
                 try:
-                    await _append_chat_session_message(
-                        workspace_id, body.chat_session_id, "user", topic,
+                    await _chat_svc.append_chat_session_message(
+                        request.app.state.db_pool, workspace_id, body.chat_session_id, "user", topic,
                     )
                     sources_lines = []
                     for s in (result.get("sources") or [])[:10]:
@@ -307,8 +308,8 @@ async def create_research_session(request: Request, workspace_id: int, body: Res
                             sources_lines.append(f"- {title_s}")
                     sources_md = ("\n\n**Sources:**\n" + "\n".join(sources_lines)) if sources_lines else ""
                     chat_content = f"**Research: {result['title']}**\n\n{result.get('content') or result.get('summary', '')}{sources_md}"
-                    await _append_chat_session_message(
-                        workspace_id, body.chat_session_id, "assistant", chat_content,
+                    await _chat_svc.append_chat_session_message(
+                        request.app.state.db_pool, workspace_id, body.chat_session_id, "assistant", chat_content,
                     )
                 except Exception as _persist_exc:
                     logger.warning("Failed to persist research result to chat session %s: %s", body.chat_session_id, _persist_exc)
