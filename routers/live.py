@@ -25,6 +25,7 @@ from config import (
     LIVEKIT_WS_URL, WHISPER_LIVE_URL,
 )
 from models import AnalyzeTextRequest, LiveQARequest
+from services.utils import _json_line
 from services.workspace_svc import _ensure_user_workspace
 
 router = APIRouter()
@@ -255,7 +256,7 @@ async def get_live_qa_entries(request: Request, workspace_id: int, session_id: i
 
 @router.post("/analyze-text")
 async def analyze_text(request: Request, body: AnalyzeTextRequest):
-    from main_live import analyze_with_llm, save_meeting, _json_line
+    from main_live import analyze_with_llm, save_meeting
     text = body.text.strip()
     if not text:
         raise HTTPException(status_code=400, detail="Text is required.")

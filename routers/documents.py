@@ -13,6 +13,7 @@ from fastapi import APIRouter, BackgroundTasks, File, HTTPException, Request, Up
 from starlette.responses import StreamingResponse
 
 from config import MINIO_BUCKET
+from services.file_utils import _content_disposition
 from services.storage import get_minio_client
 from services.workspace_svc import _ensure_user_workspace
 
@@ -100,7 +101,6 @@ async def get_document_detail(request: Request, workspace_id: int, doc_id: int):
 
 @router.get("/workspaces/{workspace_id}/documents/{doc_id}/download")
 async def download_document(request: Request, workspace_id: int, doc_id: int):
-    from main_live import _content_disposition
     await _ensure_user_workspace(request, workspace_id)
     async with request.app.state.db_pool.acquire() as conn:
         row = await conn.fetchrow(
@@ -124,7 +124,6 @@ async def download_document(request: Request, workspace_id: int, doc_id: int):
 @router.get("/documents/{doc_id}/raw")
 async def document_raw(doc_id: int, request: Request):
     """Serve raw document file inline for preview with HTTP range request support."""
-    from main_live import _content_disposition
     async with request.app.state.db_pool.acquire() as conn:
         row = await conn.fetchrow(
             "SELECT filename, object_key, mime_type, drive_file_id FROM documents WHERE id = $1",

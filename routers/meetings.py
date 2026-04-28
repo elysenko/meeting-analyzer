@@ -15,6 +15,7 @@ from models import (
     MeetingMergeRequest, MeetingWorkspaceUpdate,
     TodoUpdateRequest, WorkspaceTodoCreateRequest, WorkspaceTodoUpdateRequest,
 )
+from services.todo_svc import _normalize_todo_status, _parse_workspace_todo_id
 from services.workspace_svc import _ensure_user_workspace
 
 router = APIRouter()
@@ -207,7 +208,7 @@ async def get_workspace_todo(request: Request, workspace_id: int, todo_id: str):
 @router.post("/workspaces/{workspace_id}/todos")
 async def create_workspace_todo(request: Request, workspace_id: int, body: WorkspaceTodoCreateRequest):
     from main_live import (
-        _normalize_todo_status, _normalize_iso_due_date,
+        _normalize_iso_due_date,
         _iso_date_param, _normalize_workspace_manual_todo,
     )
     await _ensure_user_workspace(request, workspace_id)
@@ -238,7 +239,6 @@ async def create_workspace_todo(request: Request, workspace_id: int, body: Works
 @router.patch("/workspaces/{workspace_id}/todos/{todo_id:path}")
 async def update_workspace_todo(request: Request, workspace_id: int, todo_id: str, body: WorkspaceTodoUpdateRequest):
     from main_live import (
-        _parse_workspace_todo_id, _normalize_todo_status,
         _normalize_iso_due_date, _iso_date_param, _normalize_workspace_manual_todo,
     )
     await _ensure_user_workspace(request, workspace_id)
@@ -293,7 +293,6 @@ async def update_workspace_todo(request: Request, workspace_id: int, todo_id: st
 
 @router.delete("/workspaces/{workspace_id}/todos/{todo_id:path}")
 async def delete_workspace_todo(request: Request, workspace_id: int, todo_id: str):
-    from main_live import _parse_workspace_todo_id
     await _ensure_user_workspace(request, workspace_id)
     try:
         source, manual_id, _ = _parse_workspace_todo_id(todo_id)
@@ -331,7 +330,7 @@ async def delete_workspace_todo(request: Request, workspace_id: int, todo_id: st
 async def update_meeting_todo(meeting_id: int, todo_index: int, body: TodoUpdateRequest, request: Request):
     from main_live import (
         _load_meeting_todos_for_update, _ensure_datetime,
-        _normalize_iso_due_date, _normalize_todo_status,
+        _normalize_iso_due_date,
     )
     meeting, todos = await _load_meeting_todos_for_update(meeting_id)
     if todo_index < 0 or todo_index >= len(todos):

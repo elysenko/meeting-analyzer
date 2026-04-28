@@ -16,6 +16,13 @@ from config import (
 )
 from dependencies import get_db_pool
 from services.workspace_svc import _ensure_user_workspace, _ensure_workspace_owner
+from services.llm_prefs_svc import (
+    _fallback_llm_models,
+    _get_global_llm_defaults,
+    _get_workspace_llm_preferences,
+    _merge_llm_preferences,
+    _set_global_llm_defaults,
+)
 from models import (
     ApplyLLMDefaultsRequest, FolderCreate, FolderUpdate,
     WorkspaceCreate, WorkspaceFolderUpdate, WorkspaceLLMPreferences,
@@ -57,7 +64,6 @@ async def _get_keycloak_admin_token() -> str | None:
 
 @router.get("/llm/models")
 async def list_llm_models(request: Request):
-    from main_live import _fallback_llm_models
     try:
         return await request.app.state.llm_runner_service.get_json("/v1/models", timeout=30.0)
     except Exception as exc:
@@ -67,21 +73,18 @@ async def list_llm_models(request: Request):
 
 @router.get("/settings/llm-defaults")
 async def get_global_llm_defaults(request: Request):
-    from main_live import _get_global_llm_defaults
-    return await _get_global_llm_defaults()
+    return await _get_global_llm_defaults(request.app.state.db_pool)
 
 
 @router.put("/settings/llm-defaults")
 async def put_global_llm_defaults(request: Request, body: WorkspaceLLMPreferences):
-    from main_live import _set_global_llm_defaults
-    return await _set_global_llm_defaults(body.model_dump())
+    return await _set_global_llm_defaults(request.app.state.db_pool, body.model_dump())
 
 
 @router.post("/settings/llm-defaults/apply")
 async def apply_global_llm_defaults(request: Request, body: ApplyLLMDefaultsRequest):
-    from main_live import _get_global_llm_defaults
     scope = (body.scope or "current").strip().lower()
-    defaults = await _get_global_llm_defaults()
+    defaults = await _get_global_llm_defaults(request.app.state.db_pool)
     async with request.app.state.db_pool.acquire() as conn:
         if scope == "all":
             result = await conn.execute(
@@ -110,9 +113,8 @@ async def apply_global_llm_defaults(request: Request, body: ApplyLLMDefaultsRequ
 
 @router.post("/workspaces")
 async def create_workspace(request: Request, body: WorkspaceCreate):
-    from main_live import _get_global_llm_defaults
     uid = getattr(request.state, 'user_id', None)
-    prefs = await _get_global_llm_defaults()
+    prefs = await _get_global_llm_defaults(request.app.state.db_pool)
     async with request.app.state.db_pool.acquire() as conn:
         row = await conn.fetchrow(
             "INSERT INTO workspaces (name, llm_preferences, folder_id, user_id) VALUES ($1, $2::jsonb, $3, $4) RETURNING id, name, created_at, folder_id",
@@ -126,14 +128,14 @@ async def create_workspace(request: Request, body: WorkspaceCreate):
 
 @router.get("/workspaces/{workspace_id}/llm-preferences")
 async def get_workspace_llm_preferences(request: Request, workspace_id: int):
-    from main_live import _get_workspace_llm_preferences, _merge_llm_preferences
     await _ensure_user_workspace(request, workspace_id)
-    return _merge_llm_preferences((await _get_workspace_llm_preferences(workspace_id)))
+    return _merge_llm_preferences(
+        await _get_workspace_llm_preferences(request.app.state.db_pool, workspace_id)
+    )
 
 
 @router.put("/workspaces/{workspace_id}/llm-preferences")
 async def put_workspace_llm_preferences(request: Request, workspace_id: int, body: WorkspaceLLMPreferences):
-    from main_live import _merge_llm_preferences
     await _ensure_user_workspace(request, workspace_id)
     prefs = _merge_llm_preferences(body.model_dump())
     async with request.app.state.db_pool.acquire() as conn:
