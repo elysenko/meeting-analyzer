@@ -13,6 +13,7 @@ from fastapi import APIRouter, BackgroundTasks, File, HTTPException, Request, Up
 from starlette.responses import StreamingResponse
 
 from config import MINIO_BUCKET
+from services.documents_svc import serialize_document_row as _serialize_document_row
 from services.file_utils import _content_disposition
 from services.storage import get_minio_client
 from services.workspace_svc import _ensure_user_workspace
@@ -29,7 +30,7 @@ async def upload_document(
     file: UploadFile = File(...),
 ):
     from main_live import (
-        _detect_mime, _serialize_document_row, _extract_and_store,
+        _detect_mime, _extract_and_store,
     )
     await _ensure_user_workspace(request, workspace_id)
 
@@ -63,7 +64,6 @@ async def upload_document(
 
 @router.get("/workspaces/{workspace_id}/documents")
 async def list_documents(request: Request, workspace_id: int):
-    from main_live import _serialize_document_row
     await _ensure_user_workspace(request, workspace_id)
     async with request.app.state.db_pool.acquire() as conn:
         rows = await conn.fetch(
@@ -82,7 +82,6 @@ async def list_documents(request: Request, workspace_id: int):
 
 @router.get("/workspaces/{workspace_id}/documents/{doc_id}")
 async def get_document_detail(request: Request, workspace_id: int, doc_id: int):
-    from main_live import _serialize_document_row
     await _ensure_user_workspace(request, workspace_id)
     async with request.app.state.db_pool.acquire() as conn:
         row = await conn.fetchrow(
@@ -289,7 +288,7 @@ async def get_document_text(request: Request, workspace_id: int, doc_id: int):
 
 @router.post("/workspaces/{workspace_id}/documents/{doc_id}/analyze")
 async def analyze_document_summary(request: Request, workspace_id: int, doc_id: int):
-    from main_live import _analyze_document_and_store, _serialize_document_row
+    from main_live import _analyze_document_and_store
     await _ensure_user_workspace(request, workspace_id)
     async with request.app.state.db_pool.acquire() as conn:
         row = await conn.fetchrow(
@@ -314,9 +313,7 @@ async def analyze_document_summary(request: Request, workspace_id: int, doc_id: 
 @router.post("/workspaces/{workspace_id}/documents/{doc_id}/rotate-pages")
 async def rotate_document_pages(request: Request, workspace_id: int, doc_id: int, body: dict):
     """Rotate pages in a stored PDF (raw file and/or preview) and overwrite in MinIO."""
-    from main_live import (
-        _rotate_pdf_pages_sync, _serialize_document_row,
-    )
+    from main_live import _rotate_pdf_pages_sync
     degrees = body.get("degrees")
     landscape_only = body.get("landscape_only", False)
     page_indices = body.get("page_indices")

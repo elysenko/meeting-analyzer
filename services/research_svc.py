@@ -15,10 +15,13 @@ from datetime import datetime
 from typing import Any
 from urllib.parse import urlparse
 
+from fastapi import HTTPException
+
 from config import (
     DEEP_RESEARCH_ROOT,
     DOCUMENT_RETRIEVAL_LIMIT,
     DR_REFINE_GUIDANCE_PATH,
+    GENERATE_TEMPLATE_CATALOG,
     QUICK_RESEARCH_ROOT,
     RESEARCH_TYPE_OVERLAYS,
 )
@@ -633,6 +636,13 @@ async def replace_research_chunks(pool, research_id: int) -> None:
     logger.info("Vectorized research %s: %d chunks", research_id, len(chunks))
 
 
+def _get_template_config(template_key: str | None) -> dict[str, Any]:
+    key = (template_key or "requirements").strip().lower()
+    if key not in GENERATE_TEMPLATE_CATALOG:
+        raise HTTPException(status_code=400, detail="Unknown artifact template.")
+    return GENERATE_TEMPLATE_CATALOG[key]
+
+
 def serialize_research_row(row: Any) -> dict[str, Any]:
     from services.text_svc import _json_list, _json_dict, _coerce_int_list  # noqa: PLC0415
 
@@ -646,6 +656,8 @@ def serialize_research_row(row: Any) -> dict[str, Any]:
     if data.get("refinement") and isinstance(data["refinement"], str):
         data["refinement"] = _json_dict(data["refinement"])
     data["content_html"] = _render_markdown_html(data.get("content") or data.get("summary") or "")
+    if data.get("artifact_template"):
+        data["template_label"] = _get_template_config(data["artifact_template"])["label"]
     return data
 
 

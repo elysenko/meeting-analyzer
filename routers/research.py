@@ -13,6 +13,7 @@ from fastapi import APIRouter, HTTPException, Request
 from starlette.responses import StreamingResponse
 
 from models import ResearchRefineRequest, ResearchRequest
+from services.research_svc import serialize_research_row as _serialize_research_row
 from services.workspace_svc import _ensure_user_workspace
 
 router = APIRouter()
@@ -21,7 +22,6 @@ logger = logging.getLogger("meeting-analyzer")
 
 @router.get("/workspaces/{workspace_id}/research")
 async def list_research_sessions(request: Request, workspace_id: int):
-    from main_live import _serialize_research_row
     await _ensure_user_workspace(request, workspace_id)
     async with request.app.state.db_pool.acquire() as conn:
         rows = await conn.fetch(
@@ -45,7 +45,6 @@ async def list_research_sessions(request: Request, workspace_id: int):
 
 @router.get("/workspaces/{workspace_id}/research/{research_id}")
 async def get_research_session(request: Request, workspace_id: int, research_id: int):
-    from main_live import _serialize_research_row
     await _ensure_user_workspace(request, workspace_id)
     async with request.app.state.db_pool.acquire() as conn:
         row = await conn.fetchrow(
