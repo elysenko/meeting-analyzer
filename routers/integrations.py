@@ -23,6 +23,7 @@ from starlette.responses import StreamingResponse
 
 from config import MINIO_BUCKET, PIPER_TTS_URL
 from models import TTSRequest
+from services.storage import get_minio_client
 
 router = APIRouter()
 logger = logging.getLogger("meeting-analyzer")
@@ -243,7 +244,6 @@ async def analyze_async(
     workspace_id: int | None = Query(default=None),
 ):
     """Accept a file upload, store it in MinIO, and queue it for background processing."""
-    from main_live import _get_minio_client
     if not file.filename or not file.filename.lower().endswith((".mp4", ".m4a", ".mp3")):
         raise HTTPException(status_code=400, detail="Only MP4, M4A, and MP3 files are supported.")
     uid = getattr(request.state, "user_id", None)
@@ -268,7 +268,7 @@ async def analyze_async(
             minio_key, job_id,
         )
 
-    async with _get_minio_client() as s3:
+    async with get_minio_client(request.app.state.minio_client) as s3:
         await s3.put_object(Bucket=MINIO_BUCKET, Key=minio_key, Body=contents)
 
     async with request.app.state.db_pool.acquire() as conn:

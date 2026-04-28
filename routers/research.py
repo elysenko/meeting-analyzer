@@ -13,6 +13,7 @@ from fastapi import APIRouter, HTTPException, Request
 from starlette.responses import StreamingResponse
 
 from models import ResearchRefineRequest, ResearchRequest
+from services.workspace_svc import _ensure_user_workspace
 
 router = APIRouter()
 logger = logging.getLogger("meeting-analyzer")
@@ -20,7 +21,7 @@ logger = logging.getLogger("meeting-analyzer")
 
 @router.get("/workspaces/{workspace_id}/research")
 async def list_research_sessions(request: Request, workspace_id: int):
-    from main_live import _ensure_user_workspace, _serialize_research_row
+    from main_live import _serialize_research_row
     await _ensure_user_workspace(request, workspace_id)
     async with request.app.state.db_pool.acquire() as conn:
         rows = await conn.fetch(
@@ -44,7 +45,7 @@ async def list_research_sessions(request: Request, workspace_id: int):
 
 @router.get("/workspaces/{workspace_id}/research/{research_id}")
 async def get_research_session(request: Request, workspace_id: int, research_id: int):
-    from main_live import _ensure_user_workspace, _serialize_research_row
+    from main_live import _serialize_research_row
     await _ensure_user_workspace(request, workspace_id)
     async with request.app.state.db_pool.acquire() as conn:
         row = await conn.fetchrow(
@@ -71,7 +72,6 @@ async def get_research_session(request: Request, workspace_id: int, research_id:
 
 @router.delete("/workspaces/{workspace_id}/research/{research_id}")
 async def delete_research_session(request: Request, workspace_id: int, research_id: int):
-    from main_live import _ensure_user_workspace
     await _ensure_user_workspace(request, workspace_id)
     async with request.app.state.db_pool.acquire() as conn:
         result = await conn.execute(
@@ -85,7 +85,6 @@ async def delete_research_session(request: Request, workspace_id: int, research_
 
 @router.post("/workspaces/{workspace_id}/research/batch-delete")
 async def batch_delete_research_sessions(request: Request, workspace_id: int, body: dict):
-    from main_live import _ensure_user_workspace
     await _ensure_user_workspace(request, workspace_id)
     ids = body.get("ids", [])
     if not ids:
@@ -102,10 +101,8 @@ async def batch_delete_research_sessions(request: Request, workspace_id: int, bo
 @router.post("/workspaces/{workspace_id}/research/refine")
 async def refine_research_question(request: Request, workspace_id: int, body: ResearchRefineRequest):
     from main_live import (
-        _ensure_user_workspace, _excerpt_text,
-        _generate_research_refinement_questions,
-        _suggest_related_research_sessions,
-        _suggest_refinement_prefill,
+        _excerpt_text, _generate_research_refinement_questions,
+        _suggest_related_research_sessions, _suggest_refinement_prefill,
     )
     await _ensure_user_workspace(request, workspace_id)
     topic = body.topic.strip()

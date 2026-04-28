@@ -25,6 +25,7 @@ from config import (
     LIVEKIT_WS_URL, WHISPER_LIVE_URL,
 )
 from models import AnalyzeTextRequest, LiveQARequest
+from services.workspace_svc import _ensure_user_workspace
 
 router = APIRouter()
 logger = logging.getLogger("meeting-analyzer")
@@ -50,8 +51,8 @@ LIVE_QA_LOW_CONFIDENCE_PROMPT = (
 @router.post("/workspaces/{workspace_id}/live-qa")
 async def post_live_qa(request: Request, workspace_id: int, body: LiveQARequest):
     from main_live import (
-        _ensure_user_workspace, _retrieve_document_evidence,
-        _retrieve_meeting_evidence, _excerpt_text, _stream_llm_runner,
+        _retrieve_document_evidence, _retrieve_meeting_evidence,
+        _excerpt_text, _stream_llm_runner,
     )
     await _ensure_user_workspace(request, workspace_id)
     question = (body.question or "").strip()
@@ -219,7 +220,6 @@ async def post_live_qa(request: Request, workspace_id: int, body: LiveQARequest)
 
 @router.get("/workspaces/{workspace_id}/live-qa/{session_id}/entries")
 async def get_live_qa_entries(request: Request, workspace_id: int, session_id: int):
-    from main_live import _ensure_user_workspace
     await _ensure_user_workspace(request, workspace_id)
     async with request.app.state.db_pool.acquire() as conn:
         session = await conn.fetchrow(

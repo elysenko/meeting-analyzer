@@ -15,6 +15,7 @@ from models import (
     MeetingMergeRequest, MeetingWorkspaceUpdate,
     TodoUpdateRequest, WorkspaceTodoCreateRequest, WorkspaceTodoUpdateRequest,
 )
+from services.workspace_svc import _ensure_user_workspace
 
 router = APIRouter()
 logger = logging.getLogger("meeting-analyzer")
@@ -26,7 +27,6 @@ logger = logging.getLogger("meeting-analyzer")
 
 @router.get("/workspaces/{workspace_id}/meetings")
 async def list_workspace_meetings(request: Request, workspace_id: int):
-    from main_live import _ensure_user_workspace
     await _ensure_user_workspace(request, workspace_id)
     async with request.app.state.db_pool.acquire() as conn:
         rows = await conn.fetch(
@@ -115,7 +115,6 @@ async def update_meeting(meeting_id: int, body: dict, request: Request):
 
 @router.patch("/meetings/{meeting_id}/workspace")
 async def move_meeting_to_workspace(request: Request, meeting_id: int, body: MeetingWorkspaceUpdate):
-    from main_live import _ensure_user_workspace
     target_workspace_id = body.workspace_id
     if target_workspace_id is not None:
         await _ensure_user_workspace(request, target_workspace_id)
@@ -132,10 +131,7 @@ async def move_meeting_to_workspace(request: Request, meeting_id: int, body: Mee
 
 @router.post("/meetings/merge")
 async def merge_meetings(request: Request, body: MeetingMergeRequest):
-    from main_live import (
-        _ensure_user_workspace, _meeting_todos_payload,
-        analyze_with_llm, save_meeting,
-    )
+    from main_live import _meeting_todos_payload, analyze_with_llm, save_meeting
     if len(body.meeting_ids) < 2:
         raise HTTPException(status_code=400, detail="At least 2 meeting IDs required")
     uid = getattr(request.state, 'user_id', None)
@@ -192,14 +188,14 @@ async def merge_meetings(request: Request, body: MeetingMergeRequest):
 
 @router.get("/workspaces/{workspace_id}/todos")
 async def list_workspace_todos(request: Request, workspace_id: int):
-    from main_live import _ensure_user_workspace, _list_workspace_todo_items
+
     await _ensure_user_workspace(request, workspace_id)
     return await _list_workspace_todo_items(workspace_id)
 
 
 @router.get("/workspaces/{workspace_id}/todos/{todo_id:path}")
 async def get_workspace_todo(request: Request, workspace_id: int, todo_id: str):
-    from main_live import _ensure_user_workspace, _list_workspace_todo_items
+
     await _ensure_user_workspace(request, workspace_id)
     items = await _list_workspace_todo_items(workspace_id)
     for item in items:
@@ -211,9 +207,8 @@ async def get_workspace_todo(request: Request, workspace_id: int, todo_id: str):
 @router.post("/workspaces/{workspace_id}/todos")
 async def create_workspace_todo(request: Request, workspace_id: int, body: WorkspaceTodoCreateRequest):
     from main_live import (
-        _ensure_user_workspace, _normalize_todo_status,
-        _normalize_iso_due_date, _iso_date_param,
-        _normalize_workspace_manual_todo,
+        _normalize_todo_status, _normalize_iso_due_date,
+        _iso_date_param, _normalize_workspace_manual_todo,
     )
     await _ensure_user_workspace(request, workspace_id)
     task = (body.task or "").strip()
@@ -243,9 +238,8 @@ async def create_workspace_todo(request: Request, workspace_id: int, body: Works
 @router.patch("/workspaces/{workspace_id}/todos/{todo_id:path}")
 async def update_workspace_todo(request: Request, workspace_id: int, todo_id: str, body: WorkspaceTodoUpdateRequest):
     from main_live import (
-        _ensure_user_workspace, _parse_workspace_todo_id,
-        _normalize_todo_status, _normalize_iso_due_date, _iso_date_param,
-        _normalize_workspace_manual_todo,
+        _parse_workspace_todo_id, _normalize_todo_status,
+        _normalize_iso_due_date, _iso_date_param, _normalize_workspace_manual_todo,
     )
     await _ensure_user_workspace(request, workspace_id)
     try:
@@ -299,7 +293,7 @@ async def update_workspace_todo(request: Request, workspace_id: int, todo_id: st
 
 @router.delete("/workspaces/{workspace_id}/todos/{todo_id:path}")
 async def delete_workspace_todo(request: Request, workspace_id: int, todo_id: str):
-    from main_live import _ensure_user_workspace, _parse_workspace_todo_id
+    from main_live import _parse_workspace_todo_id
     await _ensure_user_workspace(request, workspace_id)
     try:
         source, manual_id, _ = _parse_workspace_todo_id(todo_id)

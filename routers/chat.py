@@ -19,6 +19,7 @@ from models import (
     ChatRenderRequest, ChatRequest, ChatSessionCreateRequest,
     ChatSessionUpdateRequest, ChatTurnProxyRequest,
 )
+from services.workspace_svc import _ensure_user_workspace
 
 router = APIRouter()
 logger = logging.getLogger("meeting-analyzer")
@@ -47,7 +48,7 @@ async def proxy_skill_catalog(request: Request):
 @router.post("/v1/chat/turn")
 async def proxy_chat_turn(request: Request, body: ChatTurnProxyRequest):
     from main_live import (
-        _ensure_user_workspace, _prepare_chat_turn_request,
+        _prepare_chat_turn_request,
         _append_chat_session_message, _call_llm_runner,
     )
     if body.workspace_id is not None:
@@ -145,7 +146,7 @@ async def proxy_chat_turn(request: Request, body: ChatTurnProxyRequest):
 @router.post("/v1/chat/turn/stream")
 async def proxy_chat_turn_stream(body: ChatTurnProxyRequest, request: Request):
     from main_live import (
-        _ensure_user_workspace, _prepare_chat_turn_request,
+        _prepare_chat_turn_request,
         _append_chat_session_message, _stream_llm_runner,
     )
     if body.workspace_id is not None:
@@ -241,7 +242,7 @@ async def proxy_chat_turn_stream(body: ChatTurnProxyRequest, request: Request):
 @router.get("/workspaces/{workspace_id}/chat/history")
 async def get_workspace_chat_history(request: Request, workspace_id: int):
     from main_live import (
-        _ensure_user_workspace, _get_latest_workspace_chat_session,
+        _get_latest_workspace_chat_session,
         _create_workspace_chat_session, _list_chat_session_messages,
     )
     await _ensure_user_workspace(request, workspace_id)
@@ -256,7 +257,7 @@ async def get_workspace_chat_history(request: Request, workspace_id: int):
 
 @router.delete("/workspaces/{workspace_id}/chat/history")
 async def clear_workspace_chat_history(request: Request, workspace_id: int):
-    from main_live import _ensure_user_workspace, _delete_all_workspace_chat_sessions
+    from main_live import _delete_all_workspace_chat_sessions
     await _ensure_user_workspace(request, workspace_id)
     await _delete_all_workspace_chat_sessions(workspace_id)
     return {"ok": True}
@@ -264,14 +265,14 @@ async def clear_workspace_chat_history(request: Request, workspace_id: int):
 
 @router.get("/workspaces/{workspace_id}/chat/sessions")
 async def list_workspace_chat_sessions(request: Request, workspace_id: int):
-    from main_live import _ensure_user_workspace, _list_workspace_chat_sessions
+    from main_live import _list_workspace_chat_sessions
     await _ensure_user_workspace(request, workspace_id)
     return await _list_workspace_chat_sessions(workspace_id)
 
 
 @router.post("/workspaces/{workspace_id}/chat/sessions")
 async def create_workspace_chat_session(request: Request, workspace_id: int, body: ChatSessionCreateRequest | None = None):
-    from main_live import _ensure_user_workspace, _create_workspace_chat_session
+    from main_live import _create_workspace_chat_session
     await _ensure_user_workspace(request, workspace_id)
     return await _create_workspace_chat_session(workspace_id, (body.title if body else None))
 
@@ -279,7 +280,7 @@ async def create_workspace_chat_session(request: Request, workspace_id: int, bod
 @router.get("/workspaces/{workspace_id}/chat/sessions/{session_id}")
 async def get_workspace_chat_session(request: Request, workspace_id: int, session_id: int):
     from main_live import (
-        _ensure_user_workspace, _get_workspace_chat_session,
+        _get_workspace_chat_session,
         _list_chat_session_messages,
     )
     await _ensure_user_workspace(request, workspace_id)
@@ -292,14 +293,14 @@ async def get_workspace_chat_session(request: Request, workspace_id: int, sessio
 
 @router.patch("/workspaces/{workspace_id}/chat/sessions/{session_id}")
 async def update_workspace_chat_session(request: Request, workspace_id: int, session_id: int, body: ChatSessionUpdateRequest):
-    from main_live import _ensure_user_workspace, _update_workspace_chat_session
+    from main_live import _update_workspace_chat_session
     await _ensure_user_workspace(request, workspace_id)
     return await _update_workspace_chat_session(workspace_id, session_id, body)
 
 
 @router.delete("/workspaces/{workspace_id}/chat/sessions/{session_id}")
 async def delete_workspace_chat_session(request: Request, workspace_id: int, session_id: int):
-    from main_live import _ensure_user_workspace, _delete_workspace_chat_session
+    from main_live import _delete_workspace_chat_session
     await _ensure_user_workspace(request, workspace_id)
     await _delete_workspace_chat_session(workspace_id, session_id)
     return {"ok": True}
@@ -311,7 +312,6 @@ async def delete_workspace_chat_session(request: Request, workspace_id: int, ses
 
 @router.get("/workspaces/{workspace_id}/chat/sessions/{session_id}/attachments")
 async def list_chat_attachments(request: Request, workspace_id: int, session_id: int):
-    from main_live import _ensure_user_workspace
     await _ensure_user_workspace(request, workspace_id)
     async with request.app.state.db_pool.acquire() as conn:
         rows = await conn.fetch(
@@ -333,7 +333,7 @@ async def upload_chat_attachment(
     file: UploadFile = File(...),
 ):
     from main_live import (
-        _ensure_user_workspace, _get_workspace_chat_session, _extract_text_sync,
+        _get_workspace_chat_session, _extract_text_sync,
     )
     await _ensure_user_workspace(request, workspace_id)
     await _get_workspace_chat_session(workspace_id, session_id)
@@ -384,7 +384,6 @@ async def upload_chat_attachment(
 async def delete_chat_attachment(
     request: Request, workspace_id: int, session_id: int, attachment_id: int
 ):
-    from main_live import _ensure_user_workspace
     await _ensure_user_workspace(request, workspace_id)
     async with request.app.state.db_pool.acquire() as conn:
         await conn.execute(
@@ -404,7 +403,7 @@ async def chat_generate_document(
 ):
     """Generate a document (pdf/docx/pptx) from a chat prompt and stream progress events."""
     from main_live import (
-        _ensure_user_workspace, _prepare_chat_turn_request,
+        _prepare_chat_turn_request,
         _append_chat_session_message, _generate_structured_document,
         _json_default,
     )
@@ -547,7 +546,7 @@ async def render_markdown(body: ChatRenderRequest):
 @router.post("/chat")
 async def chat(request: Request, body: ChatRequest):
     from main_live import (
-        _ensure_user_workspace, _get_workspace_chat_session,
+        _get_workspace_chat_session,
         _prepare_chat_turn_request, _append_chat_session_message,
         _list_chat_session_messages, _get_workspace_llm_preferences,
         _resolve_task_llm, _stream_llm_runner, _json_line,

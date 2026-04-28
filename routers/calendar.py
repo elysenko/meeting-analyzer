@@ -11,6 +11,7 @@ from dateutil import parser as date_parser
 from fastapi import APIRouter, HTTPException, Request
 
 from models import CalendarEventCreateRequest, CalendarEventUpdateRequest
+from services.workspace_svc import _ensure_user_workspace
 
 router = APIRouter()
 logger = logging.getLogger("meeting-analyzer")
@@ -34,7 +35,6 @@ async def list_calendar_events(
     end: str | None = None,
 ):
     """List calendar events for a workspace, optionally filtered by date range."""
-    from main_live import _ensure_user_workspace
     await _ensure_user_workspace(request, workspace_id)
     async with request.app.state.db_pool.acquire() as conn:
         if start and end:
@@ -61,7 +61,6 @@ async def list_calendar_events(
 @router.post("/workspaces/{workspace_id}/calendar")
 async def create_calendar_event(request: Request, workspace_id: int, body: CalendarEventCreateRequest):
     """Create a new calendar event."""
-    from main_live import _ensure_user_workspace
     await _ensure_user_workspace(request, workspace_id)
     title = (body.title or "").strip()
     if not title:
@@ -98,7 +97,6 @@ async def create_calendar_event(request: Request, workspace_id: int, body: Calen
 @router.get("/workspaces/{workspace_id}/calendar/{event_id}")
 async def get_calendar_event(request: Request, workspace_id: int, event_id: int):
     """Get a single calendar event."""
-    from main_live import _ensure_user_workspace
     await _ensure_user_workspace(request, workspace_id)
     async with request.app.state.db_pool.acquire() as conn:
         row = await conn.fetchrow(
@@ -116,7 +114,6 @@ async def get_calendar_event(request: Request, workspace_id: int, event_id: int)
 @router.patch("/workspaces/{workspace_id}/calendar/{event_id}")
 async def update_calendar_event(request: Request, workspace_id: int, event_id: int, body: CalendarEventUpdateRequest):
     """Update a calendar event (drag-drop reschedule, edit details)."""
-    from main_live import _ensure_user_workspace
     await _ensure_user_workspace(request, workspace_id)
     async with request.app.state.db_pool.acquire() as conn:
         existing = await conn.fetchrow(
@@ -178,7 +175,6 @@ async def update_calendar_event(request: Request, workspace_id: int, event_id: i
 @router.delete("/workspaces/{workspace_id}/calendar/{event_id}")
 async def delete_calendar_event(request: Request, workspace_id: int, event_id: int):
     """Delete a calendar event."""
-    from main_live import _ensure_user_workspace
     await _ensure_user_workspace(request, workspace_id)
     async with request.app.state.db_pool.acquire() as conn:
         result = await conn.execute(

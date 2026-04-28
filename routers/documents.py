@@ -13,6 +13,8 @@ from fastapi import APIRouter, BackgroundTasks, File, HTTPException, Request, Up
 from starlette.responses import StreamingResponse
 
 from config import MINIO_BUCKET
+from services.storage import get_minio_client
+from services.workspace_svc import _ensure_user_workspace
 
 router = APIRouter()
 logger = logging.getLogger("meeting-analyzer")
@@ -26,7 +28,6 @@ async def upload_document(
     file: UploadFile = File(...),
 ):
     from main_live import (
-        _ensure_user_workspace, _get_minio_client,
         _detect_mime, _serialize_document_row, _extract_and_store,
     )
     await _ensure_user_workspace(request, workspace_id)
@@ -36,7 +37,7 @@ async def upload_document(
     mime_type = _detect_mime(filename)
     object_key = f"workspaces/{workspace_id}/documents/{uuid.uuid4()}_{filename}"
 
-    async with _get_minio_client() as client:
+    async with get_minio_client(request.app.state.minio_client) as client:
         await client.put_object(
             Bucket=MINIO_BUCKET,
             Key=object_key,
@@ -61,7 +62,7 @@ async def upload_document(
 
 @router.get("/workspaces/{workspace_id}/documents")
 async def list_documents(request: Request, workspace_id: int):
-    from main_live import _ensure_user_workspace, _serialize_document_row
+    from main_live import _serialize_document_row
     await _ensure_user_workspace(request, workspace_id)
     async with request.app.state.db_pool.acquire() as conn:
         rows = await conn.fetch(
@@ -80,7 +81,7 @@ async def list_documents(request: Request, workspace_id: int):
 
 @router.get("/workspaces/{workspace_id}/documents/{doc_id}")
 async def get_document_detail(request: Request, workspace_id: int, doc_id: int):
-    from main_live import _ensure_user_workspace, _serialize_document_row
+    from main_live import _serialize_document_row
     await _ensure_user_workspace(request, workspace_id)
     async with request.app.state.db_pool.acquire() as conn:
         row = await conn.fetchrow(
@@ -99,7 +100,7 @@ async def get_document_detail(request: Request, workspace_id: int, doc_id: int):
 
 @router.get("/workspaces/{workspace_id}/documents/{doc_id}/download")
 async def download_document(request: Request, workspace_id: int, doc_id: int):
-    from main_live import _ensure_user_workspace, _get_minio_client, _content_disposition
+    from main_live import _content_disposition
     await _ensure_user_workspace(request, workspace_id)
     async with request.app.state.db_pool.acquire() as conn:
         row = await conn.fetchrow(
@@ -109,7 +110,7 @@ async def download_document(request: Request, workspace_id: int, doc_id: int):
     if not row:
         raise HTTPException(status_code=404, detail="Document not found")
 
-    async with _get_minio_client() as client:
+    async with get_minio_client(request.app.state.minio_client) as client:
         response = await client.get_object(Bucket=MINIO_BUCKET, Key=row["object_key"])
         data = await response["Body"].read()
 
@@ -123,7 +124,7 @@ async def download_document(request: Request, workspace_id: int, doc_id: int):
 @router.get("/documents/{doc_id}/raw")
 async def document_raw(doc_id: int, request: Request):
     """Serve raw document file inline for preview with HTTP range request support."""
-    from main_live import _get_minio_client, _content_disposition
+    from main_live import _content_disposition
     async with request.app.state.db_pool.acquire() as conn:
         row = await conn.fetchrow(
             "SELECT filename, object_key, mime_type, drive_file_id FROM documents WHERE id = $1",
@@ -134,7 +135,7 @@ async def document_raw(doc_id: int, request: Request):
     if not row["object_key"]:
         raise HTTPException(status_code=404, detail="File not stored locally")
 
-    async with _get_minio_client() as client:
+    async with get_minio_client(request.app.state.minio_client) as client:
         head = await client.head_object(Bucket=MINIO_BUCKET, Key=row["object_key"])
     total_size: int = head["ContentLength"]
 
@@ -155,9 +156,10 @@ async def document_raw(doc_id: int, request: Request):
 
     length = end - start + 1
     minio_range = f"bytes={start}-{end}"
+    minio_session = request.app.state.minio_client
 
     async def _stream():
-        async with _get_minio_client() as client:
+        async with get_minio_client(minio_session) as client:
             resp = await client.get_object(
                 Bucket=MINIO_BUCKET,
                 Key=row["object_key"],
@@ -186,7 +188,6 @@ async def document_raw(doc_id: int, request: Request):
 @router.get("/documents/{doc_id}/preview")
 async def document_preview_pdf(doc_id: int, request: Request):
     """Serve the generated PDF preview inline with HTTP range request support."""
-    from main_live import _get_minio_client
     async with request.app.state.db_pool.acquire() as conn:
         row = await conn.fetchrow(
             "SELECT preview_pdf_key FROM documents WHERE id = $1", doc_id,
@@ -196,7 +197,7 @@ async def document_preview_pdf(doc_id: int, request: Request):
     if not row["preview_pdf_key"]:
         raise HTTPException(status_code=404, detail="PDF preview not available")
 
-    async with _get_minio_client() as client:
+    async with get_minio_client(request.app.state.minio_client) as client:
         head = await client.head_object(Bucket=MINIO_BUCKET, Key=row["preview_pdf_key"])
     total_size: int = head["ContentLength"]
 
@@ -217,9 +218,10 @@ async def document_preview_pdf(doc_id: int, request: Request):
 
     length = end - start + 1
     minio_range = f"bytes={start}-{end}"
+    minio_session = request.app.state.minio_client
 
     async def _stream():
-        async with _get_minio_client() as client:
+        async with get_minio_client(minio_session) as client:
             resp = await client.get_object(
                 Bucket=MINIO_BUCKET,
                 Key=row["preview_pdf_key"],
@@ -247,7 +249,6 @@ async def document_preview_pdf(doc_id: int, request: Request):
 
 @router.delete("/workspaces/{workspace_id}/documents/{doc_id}")
 async def delete_document(request: Request, workspace_id: int, doc_id: int):
-    from main_live import _ensure_user_workspace, _get_minio_client
     await _ensure_user_workspace(request, workspace_id)
     async with request.app.state.db_pool.acquire() as conn:
         row = await conn.fetchrow(
@@ -258,7 +259,7 @@ async def delete_document(request: Request, workspace_id: int, doc_id: int):
         raise HTTPException(status_code=404, detail="Document not found")
 
     try:
-        async with _get_minio_client() as client:
+        async with get_minio_client(request.app.state.minio_client) as client:
             for key in [row["object_key"], row["preview_pdf_key"]]:
                 if key:
                     try:
@@ -276,7 +277,6 @@ async def delete_document(request: Request, workspace_id: int, doc_id: int):
 
 @router.get("/workspaces/{workspace_id}/documents/{doc_id}/text")
 async def get_document_text(request: Request, workspace_id: int, doc_id: int):
-    from main_live import _ensure_user_workspace
     await _ensure_user_workspace(request, workspace_id)
     async with request.app.state.db_pool.acquire() as conn:
         row = await conn.fetchrow(
@@ -290,7 +290,7 @@ async def get_document_text(request: Request, workspace_id: int, doc_id: int):
 
 @router.post("/workspaces/{workspace_id}/documents/{doc_id}/analyze")
 async def analyze_document_summary(request: Request, workspace_id: int, doc_id: int):
-    from main_live import _ensure_user_workspace, _analyze_document_and_store, _serialize_document_row
+    from main_live import _analyze_document_and_store, _serialize_document_row
     await _ensure_user_workspace(request, workspace_id)
     async with request.app.state.db_pool.acquire() as conn:
         row = await conn.fetchrow(
@@ -316,7 +316,6 @@ async def analyze_document_summary(request: Request, workspace_id: int, doc_id: 
 async def rotate_document_pages(request: Request, workspace_id: int, doc_id: int, body: dict):
     """Rotate pages in a stored PDF (raw file and/or preview) and overwrite in MinIO."""
     from main_live import (
-        _ensure_user_workspace, _get_minio_client,
         _rotate_pdf_pages_sync, _serialize_document_row,
     )
     degrees = body.get("degrees")
@@ -345,7 +344,7 @@ async def rotate_document_pages(request: Request, workspace_id: int, doc_id: int
     if not keys_to_rotate:
         raise HTTPException(status_code=400, detail="No PDF data found for this document.")
 
-    async with _get_minio_client() as client:
+    async with get_minio_client(request.app.state.minio_client) as client:
         for key in keys_to_rotate:
             resp = await client.get_object(Bucket=MINIO_BUCKET, Key=key)
             data = await resp["Body"].read()

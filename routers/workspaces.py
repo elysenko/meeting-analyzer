@@ -15,6 +15,7 @@ from config import (
     KEYCLOAK_CLIENT_ID, KEYCLOAK_CLIENT_SECRET, KEYCLOAK_REALM, KEYCLOAK_URL,
 )
 from dependencies import get_db_pool
+from services.workspace_svc import _ensure_user_workspace, _ensure_workspace_owner
 from models import (
     ApplyLLMDefaultsRequest, FolderCreate, FolderUpdate,
     WorkspaceCreate, WorkspaceFolderUpdate, WorkspaceLLMPreferences,
@@ -125,14 +126,14 @@ async def create_workspace(request: Request, body: WorkspaceCreate):
 
 @router.get("/workspaces/{workspace_id}/llm-preferences")
 async def get_workspace_llm_preferences(request: Request, workspace_id: int):
-    from main_live import _ensure_user_workspace, _get_workspace_llm_preferences, _merge_llm_preferences
+    from main_live import _get_workspace_llm_preferences, _merge_llm_preferences
     await _ensure_user_workspace(request, workspace_id)
     return _merge_llm_preferences((await _get_workspace_llm_preferences(workspace_id)))
 
 
 @router.put("/workspaces/{workspace_id}/llm-preferences")
 async def put_workspace_llm_preferences(request: Request, workspace_id: int, body: WorkspaceLLMPreferences):
-    from main_live import _ensure_user_workspace, _merge_llm_preferences
+    from main_live import _merge_llm_preferences
     await _ensure_user_workspace(request, workspace_id)
     prefs = _merge_llm_preferences(body.model_dump())
     async with request.app.state.db_pool.acquire() as conn:
@@ -175,7 +176,6 @@ async def list_workspaces(request: Request):
 
 @router.delete("/workspaces/{workspace_id}")
 async def delete_workspace(request: Request, workspace_id: int):
-    from main_live import _ensure_workspace_owner
     await _ensure_workspace_owner(request, workspace_id)
     uid = getattr(request.state, 'user_id', None)
     async with request.app.state.db_pool.acquire() as conn:
@@ -196,7 +196,6 @@ async def delete_workspace(request: Request, workspace_id: int):
 
 @router.patch("/workspaces/{workspace_id}")
 async def update_workspace(request: Request, workspace_id: int, body: WorkspaceUpdate):
-    from main_live import _ensure_workspace_owner
     await _ensure_workspace_owner(request, workspace_id)
     uid = getattr(request.state, 'user_id', None)
     async with request.app.state.db_pool.acquire() as conn:
@@ -215,7 +214,6 @@ async def update_workspace(request: Request, workspace_id: int, body: WorkspaceU
 
 @router.patch("/workspaces/{workspace_id}/folder")
 async def move_workspace_to_folder(request: Request, workspace_id: int, body: WorkspaceFolderUpdate):
-    from main_live import _ensure_workspace_owner
     await _ensure_workspace_owner(request, workspace_id)
     uid = getattr(request.state, 'user_id', None)
     async with request.app.state.db_pool.acquire() as conn:
@@ -245,7 +243,6 @@ async def move_workspace_to_folder(request: Request, workspace_id: int, body: Wo
 
 @router.get("/workspaces/{workspace_id}/shares")
 async def list_workspace_shares(request: Request, workspace_id: int):
-    from main_live import _ensure_user_workspace
     await _ensure_user_workspace(request, workspace_id)
     async with request.app.state.db_pool.acquire() as conn:
         owner_row = await conn.fetchrow(
@@ -277,7 +274,6 @@ async def list_workspace_shares(request: Request, workspace_id: int):
 
 @router.post("/workspaces/{workspace_id}/shares")
 async def add_workspace_share(request: Request, workspace_id: int, body: WorkspaceShareRequest):
-    from main_live import _ensure_workspace_owner
     await _ensure_workspace_owner(request, workspace_id)
     target_uid: str | None = None
     async with request.app.state.db_pool.acquire() as conn:
@@ -312,7 +308,6 @@ async def add_workspace_share(request: Request, workspace_id: int, body: Workspa
 
 @router.delete("/workspaces/{workspace_id}/shares/{target_user_id}")
 async def remove_workspace_share(request: Request, workspace_id: int, target_user_id: str):
-    from main_live import _ensure_workspace_owner
     await _ensure_workspace_owner(request, workspace_id)
     async with request.app.state.db_pool.acquire() as conn:
         result = await conn.execute(
