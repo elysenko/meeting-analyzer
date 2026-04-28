@@ -118,6 +118,18 @@ def parse_workspace_todo_id(raw_id: str) -> tuple[str, int, int | None]:
 # ---------------------------------------------------------------------------
 
 
+def _iso_date_param(value: str | None):
+    """Convert an ISO date string or date object to a Python date for DB insertion."""
+    if not value:
+        return None
+    if hasattr(value, "toordinal"):
+        return value
+    try:
+        return datetime.fromisoformat(str(value)).date()
+    except ValueError:
+        return None
+
+
 def _normalize_iso_due_date(value: Any, reference_dt: datetime) -> str | None:
     if not value:
         return None

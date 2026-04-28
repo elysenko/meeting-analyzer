@@ -15,6 +15,8 @@ from models import (
     MeetingMergeRequest, MeetingWorkspaceUpdate,
     TodoUpdateRequest, WorkspaceTodoCreateRequest, WorkspaceTodoUpdateRequest,
 )
+from services import todos_svc as _todos_svc
+from services.meetings_svc import analyze_with_llm, save_meeting
 from services.todo_svc import _normalize_todo_status, _parse_workspace_todo_id
 from services.workspace_svc import _ensure_user_workspace
 
@@ -67,7 +69,6 @@ async def list_meetings(request: Request, unorganized: bool = Query(default=Fals
 
 @router.get("/meetings/{meeting_id}")
 async def get_meeting(meeting_id: int, request: Request):
-    from main_live import _meeting_todos_payload
     async with request.app.state.db_pool.acquire() as conn:
         row = await conn.fetchrow(
             """SELECT m.id, m.title, m.filename, m.date, m.transcript, m.summary, m.action_items,
@@ -85,7 +86,7 @@ async def get_meeting(meeting_id: int, request: Request):
                 result["action_items"] = json.loads(result["action_items"])
             except json.JSONDecodeError:
                 result["action_items"] = []
-        result["todos"] = _meeting_todos_payload(result)
+        result["todos"] = _todos_svc.meeting_todos_payload(result)
         return result
 
 
@@ -132,7 +133,6 @@ async def move_meeting_to_workspace(request: Request, meeting_id: int, body: Mee
 
 @router.post("/meetings/merge")
 async def merge_meetings(request: Request, body: MeetingMergeRequest):
-    from main_live import _meeting_todos_payload, analyze_with_llm, save_meeting
     if len(body.meeting_ids) < 2:
         raise HTTPException(status_code=400, detail="At least 2 meeting IDs required")
     uid = getattr(request.state, 'user_id', None)
@@ -158,9 +158,10 @@ async def merge_meetings(request: Request, body: MeetingMergeRequest):
     target_ws = body.workspace_id or rows[0]["workspace_id"]
     if target_ws is not None:
         await _ensure_user_workspace(request, target_ws)
-    analysis, _meta = await analyze_with_llm(combined_transcript, workspace_id=target_ws)
+    pool = request.app.state.db_pool
+    analysis, _meta = await analyze_with_llm(pool, combined_transcript, workspace_id=target_ws)
     merged_filename = f"merged-{len(rows)}-recordings"
-    new_id = await save_meeting(merged_filename, combined_transcript, analysis, target_ws, uid)
+    new_id = await save_meeting(pool, merged_filename, combined_transcript, analysis, target_ws, uid)
     if body.delete_originals:
         async with request.app.state.db_pool.acquire() as conn:
             await conn.execute("DELETE FROM meetings WHERE id = ANY($1)", body.meeting_ids)
@@ -179,7 +180,7 @@ async def merge_meetings(request: Request, body: MeetingMergeRequest):
                 result["action_items"] = json.loads(result["action_items"])
             except json.JSONDecodeError:
                 result["action_items"] = []
-        result["todos"] = _meeting_todos_payload(result)
+        result["todos"] = _todos_svc.meeting_todos_payload(result)
         return result
 
 
@@ -191,14 +192,14 @@ async def merge_meetings(request: Request, body: MeetingMergeRequest):
 async def list_workspace_todos(request: Request, workspace_id: int):
 
     await _ensure_user_workspace(request, workspace_id)
-    return await _list_workspace_todo_items(workspace_id)
+    return await _todos_svc.list_workspace_todo_items(request.app.state.db_pool, workspace_id)
 
 
 @router.get("/workspaces/{workspace_id}/todos/{todo_id:path}")
 async def get_workspace_todo(request: Request, workspace_id: int, todo_id: str):
 
     await _ensure_user_workspace(request, workspace_id)
-    items = await _list_workspace_todo_items(workspace_id)
+    items = await _todos_svc.list_workspace_todo_items(request.app.state.db_pool, workspace_id)
     for item in items:
         if item["id"] == todo_id:
             return item
@@ -207,10 +208,6 @@ async def get_workspace_todo(request: Request, workspace_id: int, todo_id: str):
 
 @router.post("/workspaces/{workspace_id}/todos")
 async def create_workspace_todo(request: Request, workspace_id: int, body: WorkspaceTodoCreateRequest):
-    from main_live import (
-        _normalize_iso_due_date,
-        _iso_date_param, _normalize_workspace_manual_todo,
-    )
     await _ensure_user_workspace(request, workspace_id)
     task = (body.task or "").strip()
     if not task:
@@ -218,8 +215,8 @@ async def create_workspace_todo(request: Request, workspace_id: int, body: Works
     assignee = (body.assignee or "").strip()[:160] or None
     notes = (body.notes or "").strip()[:4000] or None
     status = _normalize_todo_status(body.status)
-    due_date = _normalize_iso_due_date(body.due_date, datetime.now(timezone.utc)) if body.due_date else None
-    due_date_param = _iso_date_param(due_date)
+    due_date = _todos_svc._normalize_iso_due_date(body.due_date, datetime.now(timezone.utc)) if body.due_date else None
+    due_date_param = _todos_svc._iso_date_param(due_date)
     async with request.app.state.db_pool.acquire() as conn:
         row = await conn.fetchrow(
             """INSERT INTO workspace_todos (workspace_id, task, assignee, due_date, notes, status, source_type)
@@ -233,14 +230,11 @@ async def create_workspace_todo(request: Request, workspace_id: int, body: Works
             notes,
             status,
         )
-    return {"ok": True, "todo": _normalize_workspace_manual_todo(row)}
+    return {"ok": True, "todo": _todos_svc.normalize_workspace_manual_todo(row)}
 
 
 @router.patch("/workspaces/{workspace_id}/todos/{todo_id:path}")
 async def update_workspace_todo(request: Request, workspace_id: int, todo_id: str, body: WorkspaceTodoUpdateRequest):
-    from main_live import (
-        _normalize_iso_due_date, _iso_date_param, _normalize_workspace_manual_todo,
-    )
     await _ensure_user_workspace(request, workspace_id)
     try:
         source, manual_id, _ = _parse_workspace_todo_id(todo_id)
@@ -269,7 +263,7 @@ async def update_workspace_todo(request: Request, workspace_id: int, todo_id: st
         if "assignee" in provided_fields:
             data["assignee"] = (body.assignee or "").strip()[:160] or None
         if "due_date" in provided_fields:
-            data["due_date"] = _normalize_iso_due_date(body.due_date, datetime.now(timezone.utc)) if body.due_date else None
+            data["due_date"] = _todos_svc._normalize_iso_due_date(body.due_date, datetime.now(timezone.utc)) if body.due_date else None
         if "notes" in provided_fields:
             data["notes"] = (body.notes or "").strip()[:4000] or None
         if "status" in provided_fields:
@@ -282,13 +276,13 @@ async def update_workspace_todo(request: Request, workspace_id: int, todo_id: st
                          source_type, source_meeting_id, created_at, updated_at""",
             data["task"],
             data.get("assignee"),
-            _iso_date_param(data.get("due_date")),
+            _todos_svc._iso_date_param(data.get("due_date")),
             data.get("notes"),
             data.get("status"),
             manual_id,
             workspace_id,
         )
-    return {"ok": True, "todo": _normalize_workspace_manual_todo(row)}
+    return {"ok": True, "todo": _todos_svc.normalize_workspace_manual_todo(row)}
 
 
 @router.delete("/workspaces/{workspace_id}/todos/{todo_id:path}")
@@ -328,17 +322,14 @@ async def delete_workspace_todo(request: Request, workspace_id: int, todo_id: st
 
 @router.patch("/meetings/{meeting_id}/todos/{todo_index}")
 async def update_meeting_todo(meeting_id: int, todo_index: int, body: TodoUpdateRequest, request: Request):
-    from main_live import (
-        _load_meeting_todos_for_update, _ensure_datetime,
-        _normalize_iso_due_date,
-    )
-    meeting, todos = await _load_meeting_todos_for_update(meeting_id)
+    pool = request.app.state.db_pool
+    meeting, todos = await _todos_svc.load_meeting_todos_for_update(pool, meeting_id)
     if todo_index < 0 or todo_index >= len(todos):
         raise HTTPException(status_code=404, detail="To-do not found")
-    reference_dt = _ensure_datetime(meeting.get("date"))
+    reference_dt = _todos_svc.ensure_datetime(meeting.get("date"))
     provided_fields = set(body.model_fields_set)
     if "due_date" in provided_fields:
-        todos[todo_index]["due_date"] = _normalize_iso_due_date(body.due_date, reference_dt) if body.due_date else None
+        todos[todo_index]["due_date"] = _todos_svc._normalize_iso_due_date(body.due_date, reference_dt) if body.due_date else None
     if "assignee" in provided_fields:
         assignee = (body.assignee or "").strip()
         todos[todo_index]["assignee"] = assignee[:160] if assignee else None

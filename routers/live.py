@@ -27,6 +27,8 @@ from config import (
 from models import AnalyzeTextRequest, LiveQARequest
 from services.documents_svc import retrieve_document_evidence as _retrieve_document_evidence
 from services.documents_svc import retrieve_meeting_evidence as _retrieve_meeting_evidence
+from services.meetings_svc import analyze_with_llm as _meetings_analyze_with_llm
+from services.meetings_svc import save_meeting as _meetings_save_meeting
 from services.text_svc import _excerpt_text
 from services.utils import _json_line
 from services.workspace_svc import _ensure_user_workspace
@@ -256,24 +258,25 @@ async def get_live_qa_entries(request: Request, workspace_id: int, session_id: i
 
 @router.post("/analyze-text")
 async def analyze_text(request: Request, body: AnalyzeTextRequest):
-    from main_live import analyze_with_llm, save_meeting
     text = body.text.strip()
     if not text:
         raise HTTPException(status_code=400, detail="Text is required.")
 
+    pool = request.app.state.db_pool
+
     async def stream():
         yield json.dumps({"status": "Analyzing with selected model..."}) + "\n"
         try:
-            analysis, _ = await analyze_with_llm(text, body.workspace_id)
+            analysis, _ = await _meetings_analyze_with_llm(pool, text, body.workspace_id)
         except Exception as e:
             logger.error("LLM analysis failed for text input: %s", e)
             yield json.dumps({"error": f"Analysis failed: {e}"}) + "\n"
             return
 
         try:
-            meeting_id = await save_meeting(
-                "live-transcription", text, analysis, body.workspace_id,
-                user_id=getattr(request.state, "user_id", None)
+            meeting_id = await _meetings_save_meeting(
+                pool, "live-transcription", text, analysis, body.workspace_id,
+                user_id=getattr(request.state, "user_id", None),
             )
         except Exception as e:
             logger.error("Save failed for text input: %s", e)
