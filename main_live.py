@@ -1463,6 +1463,9 @@ def _coerce_str_list(value: Any) -> list[str]:
     return result
 
 
+# ---- Colour utilities ----
+
+
 def _normalize_hex_color(value: str | None) -> str | None:
     if not value:
         return None

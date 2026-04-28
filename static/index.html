@@ -4305,8 +4305,10 @@ async function loadSkillCatalog(force) {
 }
 
 async function loadGlobalLLMDefaults() {
-  try { await loadLLMModels(); } catch (e) { /* catalog unavailable — continue */ }
-  const resp = await fetch('/settings/llm-defaults');
+  const [, resp] = await Promise.all([
+    loadLLMModels().catch(function() {}),
+    fetch('/settings/llm-defaults')
+  ]);
   if (!resp.ok) throw new Error('Failed to load global model defaults.');
   globalLLMDefaults = normalizeLLMPrefs(await resp.json());
   renderSettingsPanels();
@@ -4318,8 +4320,10 @@ async function loadWorkspaceLLMPreferences() {
   // Workspace preferences are a simple DB read; they should not depend on the LLM runner
   // being reachable. If the catalog fails the dropdowns in Settings will be limited but
   // the model hint in the Live tab will still show the correct saved preference.
-  try { await loadLLMModels(); } catch (e) { /* catalog unavailable — continue */ }
-  const resp = await fetch('/workspaces/' + currentWorkspaceId + '/llm-preferences');
+  const [, resp] = await Promise.all([
+    loadLLMModels().catch(function() {}),
+    fetch('/workspaces/' + currentWorkspaceId + '/llm-preferences')
+  ]);
   if (!resp.ok) throw new Error('Failed to load workspace model preferences.');
   workspaceLLMPrefs = normalizeLLMPrefs(await resp.json());
   renderSettingsPanels();
@@ -6729,6 +6733,10 @@ async function refreshDriveStatus() {
   } catch (e) { el.textContent = 'Could not check Drive status.'; }
 }
 
+function addCloseListener(modal, overlay) {
+  modal.querySelector('[data-close]').addEventListener('click', function() { overlay.remove(); });
+}
+
 document.getElementById('wsDriveLinkBtn').addEventListener('click', async function() {
   /* Open the Drive folder browser, but only show folders */
   var driveStatus = await fetch('/drive/status').then(function(r) { return r.json(); });
@@ -6746,7 +6754,7 @@ document.getElementById('wsDriveLinkBtn').addEventListener('click', async functi
     '<button class="accent-btn" style="width:100%;margin-top:0.5rem" id="driveFolderSelect" disabled>Select This Folder</button>';
   overlay.appendChild(modal);
   document.body.appendChild(overlay);
-  modal.querySelector('[data-close]').addEventListener('click', function() { overlay.remove(); });
+  addCloseListener(modal, overlay);
 
   var folderStack = [{ id: 'root', name: 'My Drive' }];
   var listEl = modal.querySelector('#driveFolderList');
@@ -6914,7 +6922,7 @@ function openCanvasConnectModal() {
     '<button class="accent-btn" id="canvasConnectSubmit">Connect</button>';
   overlay.appendChild(modal);
   document.body.appendChild(overlay);
-  modal.querySelector('[data-close]').addEventListener('click', function() { overlay.remove(); });
+  addCloseListener(modal, overlay);
   modal.querySelector('#canvasConnectSubmit').addEventListener('click', async function() {
     var btn = this;
     var tokenInput = modal.querySelector('#canvasTokenInput');
@@ -6971,7 +6979,7 @@ async function openCanvasLinkModal() {
     '<button class="accent-btn" id="canvasLinkSubmit" disabled>Link Course</button>';
   overlay.appendChild(modal);
   document.body.appendChild(overlay);
-  modal.querySelector('[data-close]').addEventListener('click', function() { overlay.remove(); });
+  addCloseListener(modal, overlay);
   var selectEl = modal.querySelector('#canvasCourseSelect');
   var linkBtn = modal.querySelector('#canvasLinkSubmit');
   var errorEl = modal.querySelector('#canvasLinkError');
