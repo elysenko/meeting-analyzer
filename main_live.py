@@ -1416,7 +1416,7 @@ async def index(request: Request):
 
     user_id = user.get("sub") or user.get("id") or ""
     # Ensure user record exists (covers users who authenticated before upsert was added)
-    if user_id and db_pool:
+    if user_id and app.state.db_pool:
         email = user.get("email", "")
         name = user.get("name", user.get("preferred_username", ""))
         try:
@@ -1476,7 +1476,7 @@ GOOGLE_PICKER_APP_ID = os.getenv("GOOGLE_PICKER_APP_ID", "")
 async def _get_google_token(request: Request) -> str | None:
     """Retrieve the user's Google access token from DB (stored via /drive/callback)."""
     uid = getattr(request.state, "user_id", None)
-    if not uid or not db_pool:
+    if not uid or not app.state.db_pool:
         return None
     async with app.state.db_pool.acquire() as conn:
         row = await conn.fetchrow(
@@ -2450,7 +2450,7 @@ DEFAULT_CANVAS_INSTANCE = "https://byu.instructure.com"
 async def _get_canvas_token(request: Request) -> tuple[str | None, str | None]:
     """Retrieve the user's Canvas access token and instance URL from DB."""
     uid = getattr(request.state, "user_id", None)
-    if not uid or not db_pool:
+    if not uid or not app.state.db_pool:
         return None, None
     async with app.state.db_pool.acquire() as conn:
         row = await conn.fetchrow(
@@ -3082,7 +3082,7 @@ async def auth_callback(request: Request):
     request.session["user"] = dict(user)
     # Store tokens in DB, not cookie (JWTs are too large for 4KB cookie limit)
     user_id_for_token = user.get("sub") or user.get("id") or ""
-    if user_id_for_token and db_pool:
+    if user_id_for_token and app.state.db_pool:
         try:
             async with app.state.db_pool.acquire() as conn:
                 await conn.execute(
@@ -5824,7 +5824,7 @@ async def _load_meeting_todos_for_update(
         return meeting, todos
     finally:
         if owns_conn and conn is not None:
-            await db_pool.release(conn)
+            await app.state.db_pool.release(conn)
 
 
 def _format_workspace_manual_todo_id(todo_id: int) -> str:
@@ -5882,7 +5882,7 @@ async def _set_workspace_todo_status(
             return
         finally:
             if owns_conn and conn is not None:
-                await db_pool.release(conn)
+                await app.state.db_pool.release(conn)
     try:
         assert conn is not None
         meeting, todos = await _load_meeting_todos_for_update(owner_id, conn=conn)
@@ -5897,7 +5897,7 @@ async def _set_workspace_todo_status(
         )
     finally:
         if owns_conn and conn is not None:
-            await db_pool.release(conn)
+            await app.state.db_pool.release(conn)
 
 
 def _normalize_workspace_manual_todo(row: Any) -> dict[str, Any]:
@@ -8301,7 +8301,7 @@ async def _fetch_generate_task_rows(
         return task_row, run_row, run_count
     finally:
         if owns_conn and conn is not None:
-            await db_pool.release(conn)
+            await app.state.db_pool.release(conn)
 
 
 async def _fetch_generate_task_run_row(
@@ -8325,7 +8325,7 @@ async def _fetch_generate_task_run_row(
         return run_row
     finally:
         if owns_conn and conn is not None:
-            await db_pool.release(conn)
+            await app.state.db_pool.release(conn)
 
 
 async def _sync_generate_task_snapshot_from_run(
@@ -8409,7 +8409,7 @@ async def _sync_generate_task_snapshot_from_run(
         )
     finally:
         if owns_conn and conn is not None:
-            await db_pool.release(conn)
+            await app.state.db_pool.release(conn)
 
 
 async def _clone_generate_run_research_session(
