@@ -26,11 +26,14 @@ from config import (
 )
 from llm import _stream_llm_runner
 from models import AnalyzeTextRequest, LiveQARequest
+from services import chat_svc as _chat_svc
 from services.documents_svc import retrieve_document_evidence as _retrieve_document_evidence
 from services.documents_svc import retrieve_meeting_evidence as _retrieve_meeting_evidence
+from services.llm_prefs import _resolve_task_llm
+from services.llm_prefs_svc import _get_workspace_llm_preferences
 from services.meetings_svc import analyze_with_llm as _meetings_analyze_with_llm
 from services.meetings_svc import save_meeting as _meetings_save_meeting
-from services.text_svc import _excerpt_text
+from services.text_svc import _excerpt_text, SentenceBuffer
 from services.utils import _json_line
 from services.workspace_svc import _ensure_user_workspace
 
@@ -302,12 +305,7 @@ async def analyze_text(request: Request, body: AnalyzeTextRequest):
 
 @router.websocket("/ws/tts-stream")
 async def ws_tts_stream(ws: WebSocket):
-    from main_live import (
-        _ensure_ws_user_workspace, _get_workspace_chat_session,
-        _prepare_chat_turn_request, _append_chat_session_message,
-        _list_chat_session_messages, _get_workspace_llm_preferences,
-        _resolve_task_llm, _stream_llm_runner, SentenceBuffer, synthesize_and_send,
-    )
+    from main_live import _ensure_ws_user_workspace, synthesize_and_send
     await ws.accept()
     try:
         if not ws.app.state.piper_voice:
@@ -315,6 +313,7 @@ async def ws_tts_stream(ws: WebSocket):
             await ws.close()
             return
 
+        pool = ws.app.state.db_pool
         request_data = await ws.receive_json()
         question = request_data.get("question", "").strip()
         messages = request_data.get("messages") if isinstance(request_data.get("messages"), list) else None
@@ -340,8 +339,9 @@ async def ws_tts_stream(ws: WebSocket):
             await ws.close()
             return
         await _ensure_ws_user_workspace(ws, workspace_id)
-        await _get_workspace_chat_session(workspace_id, chat_session_id)
-        prepared = await _prepare_chat_turn_request(
+        await _chat_svc.get_workspace_chat_session(pool, workspace_id, chat_session_id)
+        prepared = await _chat_svc.prepare_chat_turn_request(
+            pool,
             workspace_id=workspace_id,
             chat_session_id=chat_session_id,
             message=question,
@@ -355,11 +355,11 @@ async def ws_tts_stream(ws: WebSocket):
         warned = prepared["warned"]
         latest_user_message = prepared["latest_user_message"]
         if latest_user_message:
-            await _append_chat_session_message(workspace_id, chat_session_id, "user", latest_user_message)
+            await _chat_svc.append_chat_session_message(pool, workspace_id, chat_session_id, "user", latest_user_message)
         if messages:
             history_messages = prepared["messages"]
         else:
-            history_rows = await _list_chat_session_messages(workspace_id, chat_session_id)
+            history_rows = await _chat_svc.list_chat_session_messages(pool, workspace_id, chat_session_id)
             history_messages = [
                 {"role": item["role"], "content": item["content"]}
                 for item in history_rows
@@ -380,7 +380,7 @@ async def ws_tts_stream(ws: WebSocket):
         sentence_buffer = SentenceBuffer()
         text_parts = []
 
-        tts_preferences = await _get_workspace_llm_preferences(workspace_id)
+        tts_preferences = await _get_workspace_llm_preferences(pool, workspace_id)
         tts_provider, tts_model = _resolve_task_llm(tts_preferences, "chat")
         async for event in _stream_llm_runner(
             history_messages,
@@ -407,7 +407,7 @@ async def ws_tts_stream(ws: WebSocket):
             await ws.send_json({"type": "sentence", "text": remaining})
             await synthesize_and_send(remaining, ws)
 
-        stored_message = await _append_chat_session_message(workspace_id, chat_session_id, "assistant", "".join(text_parts))
+        stored_message = await _chat_svc.append_chat_session_message(pool, workspace_id, chat_session_id, "assistant", "".join(text_parts))
         await ws.send_json({"type": "done", "full_text": "".join(text_parts), "message": stored_message})
 
     except WebSocketDisconnect:

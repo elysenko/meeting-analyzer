@@ -208,3 +208,38 @@ def _title_from_filename(filename: str) -> str:
 def _inject_team_chat(html_content: str) -> str:
     """Inject the floating team chat widget if configured (currently hidden)."""
     return html_content  # widget hidden
+
+
+# ---------------------------------------------------------------------------
+# Streaming TTS helpers
+# ---------------------------------------------------------------------------
+
+_SENTENCE_END_RE = re.compile(r'(?<=[.!?])\s+')
+
+
+class SentenceBuffer:
+    """Buffer streaming tokens and emit complete sentences for TTS synthesis."""
+
+    def __init__(self, min_length: int = 10):
+        self.buffer = ""
+        self.min_length = min_length
+
+    def add_token(self, token: str) -> list[str]:
+        self.buffer += token
+        if "." not in self.buffer and "!" not in self.buffer and "?" not in self.buffer:
+            return []
+        sentences = []
+        while True:
+            match = _SENTENCE_END_RE.search(self.buffer)
+            if not match:
+                break
+            sentence = self.buffer[:match.end()].strip()
+            self.buffer = self.buffer[match.end():]
+            if len(sentence) >= self.min_length:
+                sentences.append(sentence)
+        return sentences
+
+    def flush(self) -> str | None:
+        remaining = self.buffer.strip()
+        self.buffer = ""
+        return remaining if len(remaining) >= 3 else None

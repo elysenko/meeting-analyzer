@@ -19,6 +19,7 @@ from models import (
     ChatRenderRequest, ChatRequest, ChatSessionCreateRequest,
     ChatSessionUpdateRequest, ChatTurnProxyRequest,
 )
+from document_processing import _extract_text_sync
 from llm import _call_llm_runner, _llm_runner_proxy_get, _stream_llm_runner
 from services import chat_svc as _chat_svc
 from services.llm_prefs import _resolve_task_llm
@@ -342,7 +343,6 @@ async def upload_chat_attachment(
     session_id: int,
     file: UploadFile = File(...),
 ):
-    from main_live import _extract_text_sync
     await _ensure_user_workspace(request, workspace_id)
     await _chat_svc.get_workspace_chat_session(request.app.state.db_pool, workspace_id, session_id)
     data = await file.read()
