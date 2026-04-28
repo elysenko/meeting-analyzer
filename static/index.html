@@ -12774,7 +12774,8 @@ async function startChatResearch(mode) {
         research_type: (document.getElementById('chatResearchType') || {}).value || 'general',
         document_ids: ctx.include_document_ids || [],
         meeting_ids: ctx.meeting_ids || [],
-        research_ids: ctx.include_research_ids || []
+        research_ids: ctx.include_research_ids || [],
+        chat_session_id: currentChatSessionId || null
       })
     });
     if (!resp.ok) {

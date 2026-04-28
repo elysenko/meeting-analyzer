@@ -13313,6 +13313,27 @@ async def create_research_session(request: Request, workspace_id: int, body: Res
                 source_research_ids=result.get("source_research_ids") or [],
                 source_document_refs=result.get("source_document_refs") or (document_evidence if document_evidence else None),
             )
+            # Persist to chat session when research was triggered from chat
+            if body.chat_session_id:
+                try:
+                    await _append_chat_session_message(
+                        workspace_id, body.chat_session_id, "user", topic,
+                    )
+                    sources_lines = []
+                    for s in (result.get("sources") or [])[:10]:
+                        url = s.get("url", "")
+                        title_s = s.get("title", "") or url
+                        if url:
+                            sources_lines.append(f"- [{title_s}]({url})")
+                        elif title_s:
+                            sources_lines.append(f"- {title_s}")
+                    sources_md = ("\n\n**Sources:**\n" + "\n".join(sources_lines)) if sources_lines else ""
+                    chat_content = f"**Research: {result['title']}**\n\n{result.get('content') or result.get('summary', '')}{sources_md}"
+                    await _append_chat_session_message(
+                        workspace_id, body.chat_session_id, "assistant", chat_content,
+                    )
+                except Exception as _persist_exc:
+                    logger.warning("Failed to persist research result to chat session %s: %s", body.chat_session_id, _persist_exc)
             yield _json_line({
                 "result": {
                     "id": research_id,

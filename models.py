@@ -97,6 +97,7 @@ class ResearchRequest(BaseModel):
     document_ids: list[int] = []
     meeting_ids: list[int] = []
     research_ids: list[int] = []
+    chat_session_id: int | None = None
 
 
 class ResearchRefineRequest(BaseModel):
