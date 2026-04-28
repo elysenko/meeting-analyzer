@@ -4613,6 +4613,685 @@ async def autofill_generate_task_answers(request: Request, workspace_id: int, ta
     }
 
 
+# ---------------------------------------------------------------------------
+# Generate task streaming helpers (imported by routers/generate.py)
+# ---------------------------------------------------------------------------
+
+
+async def _run_generate_task_question_research(
+    workspace_id: int,
+    task_id: int,
+    session: dict[str, Any],
+    question_key: str,
+    guidance=None,
+):
+    """Async generator: per-question quick research for generate task intake."""
+    question = _task_question_lookup(session, question_key)
+    guidance = (guidance or "").strip() or None
+    research_topic = _build_task_question_research_topic(session, question, guidance)
+    prior_ids = list(dict.fromkeys(
+        (session.get("selected_research_ids") or [])
+        + (session.get("related_research_ids") or [])
+        + ([session.get("linked_research_id")] if session.get("linked_research_id") else [])
+    ))
+    prior_ids = [int(item) for item in prior_ids if item]
+    research_id = await _create_research_session(
+        workspace_id,
+        research_topic,
+        "quick",
+        "general",
+        title=f'Intake Research: {question.get("label") or question.get("key")}',
+        status="running",
+        linked_todo_id=session["todo"]["id"],
+        source_research_ids=prior_ids,
+    )
+    yield json.dumps({"research_id": research_id, "status": f'Researching "{question.get("label") or question.get("key")}"...'}) + "\n"
+    prior_research: list[dict[str, Any]] = []
+    if prior_ids:
+        async with app.state.db_pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT id, title, topic, mode, research_type, status, summary, content, refinement,
+                       source_research_ids, source_document_refs, created_at, updated_at
+                FROM research_sessions
+                WHERE workspace_id = $1 AND id = ANY($2::int[]) AND status = 'completed'
+                """,
+                workspace_id,
+                prior_ids,
+            )
+        prior_research = [_serialize_research_row(row) for row in rows]
+    _, document_evidence = await _build_task_document_evidence(
+        workspace_id,
+        session,
+        extra_topics=[research_topic],
+        question_items=[question],
+        limit=4,
+    )
+    await _update_research_session(research_id, source_document_refs=document_evidence)
+    try:
+        progress_queue: asyncio.Queue[str] = asyncio.Queue()
+
+        async def _qr_emit_progress(message: str) -> None:
+            await progress_queue.put(message)
+
+        async def _qr_perform_research():
+            return await _run_quick_research(
+                workspace_id,
+                research_topic,
+                "general",
+                None,
+                prior_research=prior_research,
+                task_brief=(
+                    f'Primary task: {session["todo"]["task"]}\n'
+                    f'Artifact: {_get_template_config(session["artifact_template"])["label"]}\n'
+                    f'Question: {question.get("label") or question.get("key")}\n'
+                    f'Question guidance: {guidance or ""}\n'
+                    f'Additional guidance: {session.get("prompt") or ""}\n\n'
+                    f'Supporting context:\n{await _build_generate_question_context(workspace_id, session)}'
+                ).strip(),
+                document_evidence=document_evidence,
+                progress_callback=_qr_emit_progress,
+            )
+
+        research_task = asyncio.create_task(_qr_perform_research())
+        while not research_task.done():
+            try:
+                message = await asyncio.wait_for(progress_queue.get(), timeout=0.35)
+                yield json.dumps({"research_id": research_id, "status": message}) + "\n"
+            except asyncio.TimeoutError:
+                continue
+        while not progress_queue.empty():
+            yield json.dumps({"research_id": research_id, "status": await progress_queue.get()}) + "\n"
+        result, meta = await research_task
+        await _update_research_session(
+            research_id,
+            title=result["title"],
+            summary=result["summary"],
+            content=result["content"],
+            sources=result["sources"],
+            status="completed",
+            llm_provider=meta.get("provider"),
+            llm_model=meta.get("model"),
+            refinement=result.get("refinement"),
+            source_research_ids=result.get("source_research_ids") or prior_ids,
+            source_document_refs=result.get("source_document_refs") or document_evidence,
+        )
+        updated_research_ids = list(dict.fromkeys((session.get("selected_research_ids") or []) + [research_id]))
+        question_meta = {
+            "research_id": research_id,
+            "title": result["title"],
+            "summary": result["summary"],
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }
+        if guidance:
+            question_meta["guidance"] = guidance
+        session_for_autofill = dict(session, selected_research_ids=updated_research_ids)
+        conflicts = _collect_manual_answer_conflicts(session_for_autofill, [question["key"]])
+        target_keys = [] if conflicts else [question["key"]]
+        autofill, answer_evidence = await _generate_task_answer_autofill(
+            workspace_id,
+            session_for_autofill,
+            overwrite=True,
+            question_keys=target_keys,
+            extra_research_ids=[research_id],
+        )
+        updated = await _update_generate_task_session_row(
+            workspace_id,
+            task_id,
+            GenerateTaskUpdateRequest(
+                selected_research_ids=updated_research_ids,
+                question_research={question["key"]: question_meta},
+                answers=autofill,
+                answer_evidence=answer_evidence,
+                answer_meta=_build_generate_answer_meta_patch(autofill, "quick_research", research_id=research_id),
+                current_step="intake",
+            ),
+        )
+        if meta.get("warning"):
+            yield json.dumps({"warning": meta["warning"]}) + "\n"
+        yield _json_line({
+            "result": {
+                "research_id": research_id,
+                "question_key": question["key"],
+                "summary": result["summary"],
+                "title": result["title"],
+                "autofill_answers": autofill,
+                "answer_evidence": answer_evidence,
+                "conflicts": conflicts,
+                "session": updated,
+            }
+        })
+    except Exception as exc:
+        await _update_research_session(research_id, status="failed", error=str(exc))
+        yield json.dumps({"error": str(exc), "research_id": research_id, "question_key": question_key}) + "\n"
+
+
+async def _run_generate_task_question_chat(
+    workspace_id: int,
+    task_id: int,
+    session: dict[str, Any],
+    question_key: str,
+    user_message: str,
+):
+    """Async generator: chat-based answer update for a single intake question."""
+    question = _task_question_lookup(session, question_key)
+    question_label = question.get("label") or question_key
+    current_answer = str((session.get("answers") or {}).get(question_key) or "").strip()
+    question_research = (session.get("question_research") or {}).get(question_key) or {}
+    chat_history = list(question_research.get("messages") or [])
+    now_iso = datetime.now(timezone.utc).isoformat()
+    chat_history.append({"role": "user", "content": user_message, "created_at": now_iso})
+
+    yield json.dumps({"status": "Planning..."}) + "\n"
+    preferences = await _get_workspace_llm_preferences(workspace_id)
+    provider, model = _resolve_task_llm(preferences, "chat")
+    plan_prompt = (
+        f"You are an agent helping fill in a guided intake form.\n"
+        f"Question: {question_label}\n"
+        f"Current answer: {current_answer or '(empty)'}\n"
+        f"User request: {user_message}\n\n"
+        f"Decide which tools to use. Return ONLY valid JSON:\n"
+        f'{{"tools": ["research", "documents", "reason"]}}\n\n'
+        f"- \"research\": web search for external information\n"
+        f"- \"documents\": look up the user's uploaded documents for relevant passages\n"
+        f"- \"reason\": use existing context and chat history to rewrite/improve the answer\n"
+        f"Select one or more. Most requests need just \"reason\" or \"documents\". "
+        f"Use \"research\" only when the user explicitly asks to look something up externally."
+    )
+    try:
+        plan_result, _ = await _call_llm_runner_json(
+            [{"role": "user", "content": plan_prompt}],
+            provider=provider,
+            model=model,
+            use_case="json",
+            max_tokens=256,
+        )
+        tools = _json_dict(plan_result).get("tools") or ["reason"]
+        if not isinstance(tools, list):
+            tools = ["reason"]
+        tools = [str(t).strip().lower() for t in tools if str(t).strip().lower() in ("research", "documents", "reason")]
+        if not tools:
+            tools = ["reason"]
+    except Exception:
+        tools = ["reason"]
+
+    research_result = None
+    document_evidence: list[dict[str, Any]] = []
+    research_id = None
+
+    if "documents" in tools:
+        yield json.dumps({"status": "Searching documents..."}) + "\n"
+        _, document_evidence = await _build_task_document_evidence(
+            workspace_id,
+            session,
+            extra_topics=[user_message, question_label],
+            question_items=[question],
+            limit=4,
+        )
+
+    if "research" in tools:
+        yield json.dumps({"status": "Running quick research..."}) + "\n"
+        research_topic = _build_task_question_research_topic(session, question, user_message)
+        prior_ids = list(dict.fromkeys(
+            (session.get("selected_research_ids") or [])
+            + (session.get("related_research_ids") or [])
+            + ([session.get("linked_research_id")] if session.get("linked_research_id") else [])
+        ))
+        prior_ids = [int(item) for item in prior_ids if item]
+        research_id = await _create_research_session(
+            workspace_id,
+            research_topic,
+            "quick",
+            "general",
+            title=f"Chat Research: {question_label}",
+            status="running",
+            linked_todo_id=session["todo"]["id"],
+            source_research_ids=prior_ids,
+        )
+        prior_research_chat: list[dict[str, Any]] = []
+        if prior_ids:
+            async with app.state.db_pool.acquire() as conn:
+                rows = await conn.fetch(
+                    "SELECT id, title, topic, mode, research_type, status, summary, content, refinement, "
+                    "source_research_ids, source_document_refs, created_at, updated_at "
+                    "FROM research_sessions WHERE workspace_id = $1 AND id = ANY($2::int[]) AND status = 'completed'",
+                    workspace_id,
+                    prior_ids,
+                )
+            prior_research_chat = [_serialize_research_row(row) for row in rows]
+        try:
+            chat_qr_result, chat_qr_meta = await _run_quick_research(
+                workspace_id,
+                research_topic,
+                "general",
+                None,
+                prior_research=prior_research_chat,
+                task_brief=(
+                    f"Primary task: {session['todo']['task']}\n"
+                    f"Question: {question_label}\n"
+                    f"User message: {user_message}"
+                ).strip(),
+                document_evidence=document_evidence,
+            )
+            await _update_research_session(
+                research_id,
+                title=chat_qr_result["title"],
+                summary=chat_qr_result["summary"],
+                content=chat_qr_result["content"],
+                sources=chat_qr_result["sources"],
+                status="completed",
+                llm_provider=chat_qr_meta.get("provider"),
+                llm_model=chat_qr_meta.get("model"),
+                refinement=chat_qr_result.get("refinement"),
+                source_research_ids=chat_qr_result.get("source_research_ids") or prior_ids,
+                source_document_refs=chat_qr_result.get("source_document_refs") or document_evidence,
+            )
+            research_result = chat_qr_result
+        except Exception as exc:
+            logger.warning("Question chat research failed: %s", exc)
+            await _update_research_session(research_id, status="failed", error=str(exc))
+
+    yield json.dumps({"status": "Synthesizing answer..."}) + "\n"
+    context_brief = await _build_generate_question_context(workspace_id, session)
+    grounding_pack = session.get("grounding_pack") or {}
+    grounding_block = _grounding_pack_prompt_block(grounding_pack)
+    evidence_block = _document_evidence_prompt_block(document_evidence) if document_evidence else ""
+
+    history_text = ""
+    recent_messages = chat_history[-10:]
+    if len(recent_messages) > 1:
+        history_lines = []
+        for msg in recent_messages[:-1]:
+            role_label = "User" if msg.get("role") == "user" else "Assistant"
+            history_lines.append(f"{role_label}: {msg.get('content', '')}")
+        history_text = "\n".join(history_lines)
+
+    help_line = f"Help: {question.get('help', '')}" if question.get("help") else ""
+    history_section = f"Conversation history:\n{history_text}\n\n" if history_text else ""
+    grounding_section = f"Grounded context:\n{grounding_block}\n\n" if grounding_block else ""
+    evidence_section = f"Document evidence:\n{evidence_block}\n\n" if evidence_block else ""
+    research_section = f"Research findings:\n{research_result.get('summary') or ''}\n\n" if research_result else ""
+    synthesis_prompt = (
+        f"You are an agent helping fill in a guided intake form for a task-to-deliverable workflow.\n\n"
+        f"Task: {session['todo']['task']}\n"
+        f"Artifact: {_get_template_config(session['artifact_template'])['label']}\n"
+        f"Question: {question_label}\n"
+        f"{help_line}\n\n"
+        f"Current answer:\n{current_answer or '(no answer yet)'}\n\n"
+        f"{history_section}"
+        f"User's latest message: {user_message}\n\n"
+        f"Known context:\n{context_brief or 'No supporting context.'}\n\n"
+        f"{grounding_section}"
+        f"{evidence_section}"
+        f"{research_section}"
+        "Return ONLY valid JSON with:\n"
+        '- "answer": the updated answer text for this question (or null if no change needed)\n'
+        '- "message": a brief summary of what you did (1-2 sentences, for the chat thread)\n\n'
+        "Rules:\n"
+        "- Address the user's specific request\n"
+        "- Keep the answer concise (3-5 sentences or bullet points)\n"
+        "- Do not invent facts not found in the context or research\n"
+        "- If the user's request doesn't warrant an answer change, set answer to null and explain in message\n"
+    )
+    try:
+        synthesis_result, _ = await _call_llm_runner_json(
+            [{"role": "user", "content": synthesis_prompt}],
+            provider=provider,
+            model=model,
+            use_case="json",
+            max_tokens=2048,
+        )
+        synthesis = _json_dict(synthesis_result)
+    except Exception as exc:
+        logger.warning("Question chat synthesis failed: %s", exc)
+        synthesis = {"answer": None, "message": f"I encountered an error: {exc}"}
+
+    new_answer = synthesis.get("answer")
+    assistant_message = str(synthesis.get("message") or "Done.").strip()
+    chat_history.append({
+        "role": "assistant",
+        "content": assistant_message,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "answer_updated": new_answer is not None and bool(str(new_answer or "").strip()),
+    })
+
+    answers_update: dict[str, Any] | None = None
+    answer_evidence_update: dict[str, Any] | None = None
+    if new_answer is not None and str(new_answer).strip():
+        answers_update = {question_key: str(new_answer).strip()}
+        if document_evidence:
+            answer_evidence_update = {question_key: {
+                "items": document_evidence,
+                "updated_at": now_iso,
+            }}
+    question_research_update = {question_key: dict(question_research)}
+    question_research_update[question_key]["messages"] = chat_history
+    question_research_update[question_key]["updated_at"] = now_iso
+    if research_id:
+        question_research_update[question_key]["research_id"] = research_id
+        if research_result:
+            question_research_update[question_key]["summary"] = research_result.get("summary")
+            question_research_update[question_key]["title"] = research_result.get("title")
+    updated_chat = await _update_generate_task_session_row(
+        workspace_id,
+        task_id,
+        GenerateTaskUpdateRequest(
+            answers=answers_update,
+            answer_evidence=answer_evidence_update,
+            answer_meta=_build_generate_answer_meta_patch(answers_update or {}, "chat", research_id=research_id) if answers_update else None,
+            question_research=question_research_update,
+            current_step="intake",
+        ),
+    )
+    yield _json_line({
+        "result": {
+            "assistant_message": assistant_message,
+            "answer": str(new_answer).strip() if new_answer is not None and str(new_answer).strip() else None,
+            "question_key": question_key,
+            "session": updated_chat,
+        }
+    })
+
+
+async def _run_generate_task_research_stream(
+    workspace_id: int,
+    task_id: int,
+    session: dict[str, Any],
+    body,
+):
+    """Async generator: full task research + template draft for generate task."""
+    linked_research_id = session.get("linked_research_id")
+    if not linked_research_id:
+        linked_research_id = await _ensure_task_linked_research_session(
+            workspace_id,
+            session["todo"],
+            session["related_research_ids"],
+        )
+    try:
+        yield json.dumps({"research_id": linked_research_id, "status": "Running quick research on your topic..."}) + "\n"
+        research_topic = _build_generate_task_research_topic(session, body.topic)
+        _, document_evidence = await _build_task_document_evidence(
+            workspace_id,
+            session,
+            extra_topics=[research_topic],
+            limit=4,
+        )
+        context_brief = await _build_generate_question_context(workspace_id, session)
+        document_block = _document_evidence_prompt_block(document_evidence)
+        task_brief = (
+            f'Primary task: {session["todo"]["task"]}\n'
+            f'Artifact: {_get_template_config(session["artifact_template"])["label"]}\n'
+            f'Brand: {(session.get("branding") or {}).get("brand_name") or ""}\n'
+            f'Additional guidance: {session.get("prompt") or ""}\n\n'
+            f'Setup context:\n{context_brief}'
+            + (f'\n\nDocument evidence:\n{document_block}' if document_block else "")
+        ).strip()
+        await _update_research_session(
+            linked_research_id,
+            title=f'Template Research: {session["todo"]["task"][:100]}',
+            status="running",
+            error=None,
+            source_research_ids=session["related_research_ids"],
+            source_document_refs=document_evidence,
+        )
+        gtr_progress_queue: asyncio.Queue[str] = asyncio.Queue()
+
+        async def _gtr_emit_progress(message: str) -> None:
+            await gtr_progress_queue.put(message)
+
+        research_task = asyncio.create_task(
+            _run_quick_research(
+                workspace_id,
+                research_topic,
+                body.research_type or "general",
+                None,
+                task_brief=task_brief,
+                document_evidence=document_evidence,
+                progress_callback=_gtr_emit_progress,
+            )
+        )
+        while not research_task.done():
+            try:
+                message = await asyncio.wait_for(gtr_progress_queue.get(), timeout=0.35)
+                yield json.dumps({"research_id": linked_research_id, "status": message}) + "\n"
+            except asyncio.TimeoutError:
+                continue
+        while not gtr_progress_queue.empty():
+            yield json.dumps({"research_id": linked_research_id, "status": await gtr_progress_queue.get()}) + "\n"
+        qr_result, qr_meta = await research_task
+        await _update_research_session(
+            linked_research_id,
+            title=qr_result["title"],
+            summary=qr_result["summary"],
+            content=qr_result["content"],
+            sources=qr_result["sources"],
+            status="completed",
+            llm_provider=qr_meta.get("provider"),
+            llm_model=qr_meta.get("model"),
+            source_research_ids=qr_result.get("source_research_ids") or session["related_research_ids"],
+            source_document_refs=qr_result.get("source_document_refs") or document_evidence,
+        )
+        yield json.dumps({"status": "Analyzing task context..."}) + "\n"
+        config = _get_template_config(session.get("artifact_template") or "requirements")
+        template_label = config["label"]
+        preferences = await _get_workspace_llm_preferences(workspace_id)
+        provider, model = _resolve_task_llm(preferences, "research")
+        qr_summary = qr_result.get("summary") or ""
+        qr_content = (qr_result.get("content") or "")[:4000]
+        template_section_guidance = _get_template_section_guidance(session.get("artifact_template") or "requirements")
+        draft_prompt = f"""\
+You are a document outline assistant building a {template_label} for a client deliverable.
+
+Task: {session["todo"]["task"]}
+Brand: {(session.get("branding") or {}).get("brand_name") or "Not specified"}
+Additional guidance: {session.get("prompt") or "None"}
+
+Research summary:
+{qr_summary}
+
+Research details:
+{qr_content}
+
+Setup context:
+{context_brief or "No additional setup context."}
+
+Template section guidance:
+{template_section_guidance}
+
+Use the task context and research to select and name sections that are relevant to this specific task.
+This is a structure-only outline — leave all field values as empty strings. Value prefilling happens in a separate step after the user approves the template.
+
+Return ONLY valid JSON with:
+- "organization_context_summary": string (what you learned about the organization)
+- "task_understanding": string (what the deliverable needs to accomplish)
+- "requirements_understanding": string (key requirements identified)
+- "assumptions": array of strings (key assumptions made)
+- "sections": array of 3-7 objects with keys:
+  - "key": snake_case identifier
+  - "heading": section title
+  - "summary": 1-2 sentence description of what this section covers
+  - "required": boolean
+  - "field_keys": array of question_key strings
+  - "fields": array of objects with keys:
+    - "question_key": snake_case identifier
+    - "label": human-readable label
+    - "required": boolean
+    - "input_type": "text" or "textarea"
+    - "value": "" (always empty string)
+    - "help": guidance for completing this field
+
+Base section structure on the research findings."""
+        yield json.dumps({"status": "Drafting document outline..."}) + "\n"
+        draft_payload = {}
+        for _attempt in range(2):
+            try:
+                draft_payload, _ = await _call_llm_runner_json(
+                    [{"role": "user", "content": draft_prompt}],
+                    provider=provider,
+                    model=model,
+                    use_case="json",
+                    max_tokens=3200,
+                    timeout=180.0,
+                )
+                break
+            except Exception as exc:
+                logger.warning(
+                    "Template draft generation attempt %d failed for workspace %s task %s: %s: %s",
+                    _attempt + 1,
+                    workspace_id,
+                    task_id,
+                    type(exc).__name__,
+                    exc,
+                    exc_info=True,
+                )
+                if _attempt < 1:
+                    await asyncio.sleep(3.0)
+        draft_payload = _json_dict(draft_payload)
+        draft_payload["artifact_template"] = session.get("artifact_template") or config["label"]
+        draft_payload["updated_at"] = datetime.now(timezone.utc).isoformat()
+        template_draft = _normalize_generate_template_draft(draft_payload)
+        ai_message = f"Here's a draft outline for your {template_label}. Let me know if you'd like any changes."
+        if not template_draft.get("sections"):
+            ai_message = f"I completed the research for your {template_label}, but had trouble structuring the outline. You can try refining below or proceed to intake."
+        gtr_chat_history = [{"role": "assistant", "content": ai_message, "ts": datetime.now(timezone.utc).isoformat()}]
+        await _update_generate_task_session_row(
+            workspace_id,
+            task_id,
+            GenerateTaskUpdateRequest(
+                current_step="research",
+                status="intake_ready",
+                linked_research_id=linked_research_id,
+                template_draft=template_draft,
+            ),
+        )
+        async with app.state.db_pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE generate_task_sessions SET template_chat_history = $1::jsonb, updated_at = NOW() WHERE id = $2",
+                json.dumps(gtr_chat_history),
+                task_id,
+            )
+        refreshed_session = await _get_generate_task_session(workspace_id, task_id)
+        yield _json_line({
+            "result": {
+                "research_id": linked_research_id,
+                "template_draft": template_draft,
+                "template_chat_history": gtr_chat_history,
+                "ai_message": ai_message,
+                "session": refreshed_session,
+            }
+        })
+    except Exception as exc:
+        await _update_generate_task_session_row(
+            workspace_id,
+            task_id,
+            GenerateTaskUpdateRequest(status="research_failed"),
+        )
+        await _update_research_session(
+            linked_research_id,
+            status="failed",
+            error=str(exc),
+            source_research_ids=session.get("related_research_ids") or [],
+        )
+        yield json.dumps({"error": str(exc), "research_id": linked_research_id}) + "\n"
+
+
+async def _run_generate_task_deliverable_stream(
+    workspace_id: int,
+    task_id: int,
+    session: dict[str, Any],
+    output_type: str | None,
+):
+    """Async generator: generate + store deliverable document for a generate task."""
+    output_type = (output_type or session["output_type"] or "pdf").strip().lower()
+    if output_type not in ("pdf", "pptx", "document", "docx"):
+        yield json.dumps({"error": "output_type must be pdf, pptx, document, or docx"}) + "\n"
+        return
+    review_blockers = session.get("review_blockers") or _build_generate_review_blockers(session)
+    if review_blockers:
+        yield json.dumps({"error": "Resolve the review blockers before generating this deliverable."}) + "\n"
+        return
+    context, warned = await _build_generate_task_context(session)
+    template_config = _get_template_config(session["artifact_template"])
+    safe_title = (session.get("title") or session["todo"]["task"] or template_config["label"]).strip()
+    template_instructions = {
+        "requirements": "Organize the deliverable around purpose, audience, scope, requirements, constraints, dependencies, risks, timeline, and approvals. Be explicit about assumptions and open questions.",
+        "proposal": "Organize the deliverable around the recommendation, business case, supporting evidence, options, timeline, risks, and next steps.",
+        "executive_deck": "Create an executive-friendly narrative with crisp slide titles, concise bullets, and a clear decision or action ask.",
+        "custom": "Follow the user's stated goal and intake answers closely. Produce the artifact that best fits the requested deliverable.",
+    }[session["artifact_template"]]
+    brand_block = _branding_prompt_block(session.get("branding") or {})
+    if warned:
+        yield json.dumps({"warning": "Context exceeded limit. Some longer source content was excluded."}) + "\n"
+    yield json.dumps({"status": "Generating deliverable..."}) + "\n"
+    try:
+        if output_type == "pdf":
+            generation_prompt = (
+                "Create a polished branded PDF-ready document.\n"
+                "Return ONLY valid JSON with keys \"title\" and \"sections\". "
+                "Each section must be an object with \"heading\" and \"body\".\n\n"
+                f"Artifact type: {template_config['label']}\n"
+                f"Instruction: {template_instructions}\n\n"
+                f"Brand pack:\n{brand_block}\n\n"
+                f"Task context:\n{context}\n"
+            )
+        elif output_type == "pptx":
+            generation_prompt = (
+                "You are generating a branded presentation deck as a structured JSON response.\n"
+                "Return ONLY valid JSON with keys \"title\" and \"slides\". "
+                "Each slide must be an object with \"title\" and \"bullets\" (array of bullet strings, up to 6 per slide).\n\n"
+                "GENERATION RULES — follow in strict priority order:\n"
+                "1. USER INSTRUCTIONS (highest): The user's outline, stated questions, and guidance define the slide count, structure, and content requirements. Generate every slide they specified — do not collapse, skip, or merge slides.\n"
+                "2. SUPPORTING EVIDENCE: Use the supporting reference documents and research to populate each slide with specific, concrete, factual bullets drawn from the source material.\n"
+                "3. TEMPLATE & BRAND DEFAULTS (lowest): Apply template defaults and branding only where user instructions leave room.\n\n"
+                f"Artifact type: {template_config['label']}\n"
+                f"Template instruction: {template_instructions}\n\n"
+                f"Brand pack:\n{brand_block}\n\n"
+                f"Task context:\n{context}\n"
+            )
+        elif output_type == "docx":
+            generation_prompt = (
+                "Create a polished branded Word document.\n"
+                "Return ONLY valid JSON with keys \"title\" and \"sections\". "
+                "Each section must be an object with \"heading\" and \"body\".\n\n"
+                f"Artifact type: {template_config['label']}\n"
+                f"Instruction: {template_instructions}\n\n"
+                f"Brand pack:\n{brand_block}\n\n"
+                f"Task context:\n{context}\n"
+            )
+        else:
+            generation_prompt = (
+                "Create a polished branded markdown document.\n"
+                "Return only the markdown body.\n\n"
+                f"Artifact type: {template_config['label']}\n"
+                f"Instruction: {template_instructions}\n\n"
+                f"Brand pack:\n{brand_block}\n\n"
+                f"Task context:\n{context}\n"
+            )
+        result = await _generate_structured_document(
+            workspace_id,
+            output_type=output_type,
+            safe_title=safe_title,
+            generation_prompt=generation_prompt,
+            branding=session.get("branding") or {},
+        )
+        await _update_generate_task_session_row(
+            workspace_id,
+            task_id,
+            GenerateTaskUpdateRequest(
+                output_type=output_type,
+                latest_document_id=result["document"]["id"],
+                current_step="review",
+                status="completed",
+                is_stale=False,
+                stale_flags=[],
+            ),
+        )
+        await _set_workspace_todo_status(workspace_id, session["todo"]["id"], "complete")
+        yield _json_line({"result": result})
+    except Exception as exc:
+        yield json.dumps({"error": str(exc)}) + "\n"
+
+
 @app.post("/workspaces/{workspace_id}/generate/tasks/{task_id}/question-research")
 async def run_generate_task_question_research(
     request: Request,
