@@ -12657,8 +12657,12 @@ async function sendChat() {
   activeChatRequestController = controller;
   syncChatControlState();
 
+  var assistantText = '';
+  var assistantEl = null;
+  var contentEl = null;
+
   try {
-    const resp = await fetch('/v1/chat/turn', {
+    const resp = await fetch('/v1/chat/turn/stream', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(Object.assign({
@@ -12670,21 +12674,58 @@ async function sendChat() {
       signal: controller.signal
     });
     if (!resp.ok) throw new Error(await parseJSONError(resp, 'Chat failed.'));
-    const payload = await resp.json();
 
-    if (thinkingEl) thinkingEl.remove();
-    const storedMsg = payload.message || null;
-    const responseText = (storedMsg && storedMsg.content) || payload.content || '';
-    const responseHtml = (storedMsg && storedMsg.content_html) || null;
-    const assistantEl = addChatMessage('assistant', responseText, { html: responseHtml });
-    if (storedMsg && storedMsg.id != null) assistantEl.dataset.chatMessageId = String(storedMsg.id);
-    if (responseText) appendChatMessageToHistory({ role: 'assistant', content: responseText });
+    const reader = resp.body.getReader();
+    const decoder = new TextDecoder();
+    var _buf = '';
+    var usageInfo = {};
+
+    while (true) {
+      var _r = await reader.read();
+      if (_r.done) break;
+      _buf += decoder.decode(_r.value, { stream: true });
+      var _parts = _buf.split('\n\n');
+      _buf = _parts.pop();
+      for (var _i = 0; _i < _parts.length; _i++) {
+        var _line = _parts[_i].replace(/^data:\s*/, '').trim();
+        if (!_line) continue;
+        var _evt;
+        try { _evt = JSON.parse(_line); } catch(e) { continue; }
+
+        if (_evt.type === 'text_delta') {
+          assistantText += _evt.content || '';
+          if (!assistantEl) {
+            if (thinkingEl) thinkingEl.remove();
+            assistantEl = addChatMessage('assistant', '', { html: '' });
+            assistantEl.classList.add('streaming');
+            contentEl = assistantEl.querySelector('.msg-content');
+          }
+          if (contentEl) contentEl.innerHTML = renderMarkdownHtml(assistantText);
+          scrollChat();
+        } else if (_evt.type === 'status') {
+          setChatHistoryStatus((_evt.content || 'Thinking...') + _srcLabel);
+        } else if (_evt.type === 'error') {
+          throw new Error(_evt.content || 'Chat failed.');
+        } else if (_evt.type === 'done') {
+          assistantText = _evt.content || assistantText;
+          usageInfo = _evt.usage || {};
+          if (assistantEl) {
+            assistantEl.classList.remove('streaming');
+            if (contentEl) contentEl.innerHTML = renderMarkdownHtml(assistantText);
+            if (_evt.message && _evt.message.id != null) {
+              assistantEl.dataset.chatMessageId = String(_evt.message.id);
+            }
+          }
+          if (assistantText) appendChatMessageToHistory({ role: 'assistant', content: assistantText });
+        }
+      }
+    }
+
     /* Unblock the UI immediately so the user can send a follow-up while the
        session list refreshes in the background. */
     if (activeChatRequestController === controller) activeChatRequestController = null;
     syncChatControlState();
     await loadChatSessions(true, currentChatSessionId, { skipOpen: true }).catch(function() {});
-    var usageInfo = payload.usage || {};
     var tokenStr = (usageInfo.input_tokens || usageInfo.output_tokens)
       ? (usageInfo.input_tokens || 0) + ' in / ' + (usageInfo.output_tokens || 0) + ' out'
       : '';
@@ -12694,10 +12735,16 @@ async function sendChat() {
     const aborted = controller.signal.aborted || (err && err.name === 'AbortError');
     if (currentChatSessionId) await loadChatSessions(true, currentChatSessionId, { skipOpen: true }).catch(function() {});
     if (aborted) {
+      if (assistantEl) assistantEl.classList.remove('streaming');
       setChatHistoryStatus('Response interrupted.');
     } else {
       var errMsg = err && err.message ? err.message : 'Chat failed.';
-      addChatMessage('assistant', 'Error: ' + errMsg);
+      if (!assistantEl) {
+        addChatMessage('assistant', 'Error: ' + errMsg);
+      } else {
+        assistantEl.classList.remove('streaming');
+        if (contentEl) contentEl.textContent = 'Error: ' + errMsg;
+      }
       setChatHistoryStatus(errMsg);
     }
   } finally {
