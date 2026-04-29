@@ -236,6 +236,30 @@
   .ws-card-count {
     font-family: 'JetBrains Mono', monospace; font-size: 0.72rem; color: var(--text-dim);
   }
+  /* Mobile long-press context menu */
+  #wsCardCtxBackdrop {
+    display: none; position: fixed; inset: 0; z-index: 999; background: rgba(0,0,0,0.4);
+  }
+  #wsCardCtxBackdrop.visible { display: block; }
+  #wsCardCtxMenu {
+    display: none; position: fixed; bottom: 0; left: 0; right: 0; z-index: 1000;
+    background: var(--surface); border-top: 1px solid var(--border);
+    border-radius: 16px 16px 0 0; padding: 1rem 1rem 1.5rem;
+    box-shadow: 0 -4px 20px rgba(0,0,0,0.2);
+  }
+  #wsCardCtxMenu.visible { display: block; }
+  #wsCardCtxTitle {
+    font-family: 'DM Serif Display', Georgia, serif; font-size: 0.95rem;
+    color: var(--text-dim); text-align: center; margin-bottom: 0.75rem;
+    padding-bottom: 0.75rem; border-bottom: 1px solid var(--border);
+  }
+  .ws-ctx-btn {
+    display: block; width: 100%; padding: 0.85rem 1rem; text-align: left;
+    background: none; border: none; border-radius: 8px; cursor: pointer;
+    font-size: 1rem; color: var(--text); margin-bottom: 0.1rem;
+  }
+  .ws-ctx-btn:active { background: var(--surface-raised); }
+  .ws-ctx-btn.danger { color: #e53935; }
   .ws-shared-badge {
     font-family: 'JetBrains Mono', monospace; font-size: 0.65rem;
     color: var(--accent); border: 1px solid var(--accent-dim);
@@ -7222,7 +7246,9 @@ function _bindGridDragDrop() {
 }
 
 /* Workspace grid click delegation */
+var _wsGridSuppressClick = false;
 document.getElementById('wsGrid').addEventListener('click', function(e) {
+  if (_wsGridSuppressClick) { _wsGridSuppressClick = false; return; }
   if (e.target.closest('[data-ws-rename]')) {
     const renameId = parseInt(e.target.closest('[data-ws-rename]').dataset.wsRename);
     const renameCard = e.target.closest('.ws-card');
@@ -7261,6 +7287,78 @@ document.getElementById('wsGrid').addEventListener('click', function(e) {
   const card = e.target.closest('.ws-card');
   if (card) openWorkspace(parseInt(card.dataset.wsId), card.dataset.wsName, card.dataset.wsShared === '1');
 });
+
+/* Mobile long-press context menu for workspace cards */
+(function() {
+  var _lpTimer = null;
+  var _lpCard = null;
+  var _lpMoved = false;
+  var backdrop = document.getElementById('wsCardCtxBackdrop');
+  var menu = document.getElementById('wsCardCtxMenu');
+  var titleEl = document.getElementById('wsCardCtxTitle');
+  var renameBtn = document.getElementById('wsCardCtxRename');
+  var deleteBtn = document.getElementById('wsCardCtxDelete');
+
+  function closeMenu() {
+    menu.classList.remove('visible');
+    backdrop.classList.remove('visible');
+    _lpCard = null;
+  }
+
+  backdrop.addEventListener('click', closeMenu);
+
+  renameBtn.addEventListener('click', function() {
+    var card = _lpCard;
+    closeMenu();
+    if (!card) return;
+    var wsId = parseInt(card.dataset.wsId);
+    var oldName = card.dataset.wsName;
+    var rName = prompt('Rename workspace:', oldName);
+    if (rName && rName.trim()) {
+      fetch('/workspaces/' + wsId, { method: 'PATCH', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ name: rName.trim() }) })
+        .then(function() { workspaceCatalog = []; loadLanding(); });
+    }
+  });
+
+  deleteBtn.addEventListener('click', function() {
+    var card = _lpCard;
+    closeMenu();
+    if (!card) return;
+    var wsId = parseInt(card.dataset.wsId);
+    if (!confirm('Delete this workspace and all its meetings?')) return;
+    fetch('/workspaces/' + wsId, { method: 'DELETE' }).then(function() { workspaceCatalog = []; loadLanding(); });
+  });
+
+  var grid = document.getElementById('wsGrid');
+  grid.addEventListener('touchstart', function(e) {
+    var card = e.target.closest('.ws-card');
+    if (!card || e.target.closest('.ws-card-actions')) return;
+    _lpMoved = false;
+    _lpCard = card;
+    _lpTimer = setTimeout(function() {
+      _lpTimer = null;
+      if (_lpMoved) return;
+      _wsGridSuppressClick = true;
+      if (navigator.vibrate) navigator.vibrate(30);
+      titleEl.textContent = card.dataset.wsName || 'Workspace';
+      menu.classList.add('visible');
+      backdrop.classList.add('visible');
+    }, 500);
+  }, { passive: true });
+
+  grid.addEventListener('touchmove', function() {
+    _lpMoved = true;
+    if (_lpTimer) { clearTimeout(_lpTimer); _lpTimer = null; }
+  }, { passive: true });
+
+  grid.addEventListener('touchend', function() {
+    if (_lpTimer) { clearTimeout(_lpTimer); _lpTimer = null; }
+  }, { passive: true });
+
+  grid.addEventListener('touchcancel', function() {
+    if (_lpTimer) { clearTimeout(_lpTimer); _lpTimer = null; }
+  }, { passive: true });
+})();
 
 /* Breadcrumb navigation */
 folderBreadcrumbEl.addEventListener('click', function(e) {
@@ -15662,6 +15760,13 @@ loadLanding().then(function() { _initFromUrl(); });
     <div id="deleteModalMsg">Deleting…</div>
     <button id="deleteModalClose" onclick="_hideDeleteModal()">OK</button>
   </div>
+</div>
+<!-- Mobile workspace card long-press context menu -->
+<div id="wsCardCtxBackdrop"></div>
+<div id="wsCardCtxMenu">
+  <div id="wsCardCtxTitle"></div>
+  <button class="ws-ctx-btn" id="wsCardCtxRename">Rename</button>
+  <button class="ws-ctx-btn danger" id="wsCardCtxDelete">Delete</button>
 </div>
 </body>
 </html>
