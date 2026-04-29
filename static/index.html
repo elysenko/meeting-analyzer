@@ -5525,6 +5525,18 @@ function resetChatThread() {
   scrollChat();
 }
 
+/* Minimal markdown-to-HTML for assistant messages that have no server-rendered content_html. */
+function _simpleMarkdown(text) {
+  if (!text) return '';
+  var s = text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  s = s.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+  s = s.replace(/(?<!\*)\*([^*\n]+?)\*(?!\*)/g, '<em>$1</em>');
+  s = s.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>');
+  s = s.replace(/\n\n+/g, '</p><p>');
+  s = s.replace(/\n/g, '<br>');
+  return '<p>' + s + '</p>';
+}
+
 /* Build a single chat message DOM element without touching the live container.
    Called by renderChatMessagePayload (single) and renderChatMessageBatch (bulk). */
 function _buildChatMessageElement(message) {
@@ -5554,6 +5566,8 @@ function _buildChatMessageElement(message) {
         contentEl.appendChild(span);
       }
     });
+  } else if (message.role === 'assistant') {
+    contentEl.innerHTML = _simpleMarkdown(message.content || '');
   } else {
     contentEl.textContent = message.content || '';
   }
@@ -12684,6 +12698,11 @@ async function sendChat() {
   }
   if (_docFmt) {
     input.value = '';
+    var _fsDocInput = document.getElementById('chatInputFs');
+    if (_fsDocInput) _fsDocInput.value = '';
+    if (currentWorkspaceId && currentChatSessionId) {
+      removeStoredJSON(chatDraftStorageKey(currentWorkspaceId, currentChatSessionId));
+    }
     await sendChatDocument(question, _docFmt);
     return;
   }
@@ -13121,6 +13140,11 @@ function dismissQuestion(question) {
 
 function renderDetectedQuestion(question) {
   var container = document.getElementById('liveQADetected');
+  /* Prevent duplicate cards for the same question text */
+  var existing = container.querySelectorAll('.detected-q');
+  for (var _di = 0; _di < existing.length; _di++) {
+    if (existing[_di].textContent === question) return;
+  }
   var card = document.createElement('div');
   card.className = 'live-qa-detected-card';
   var qSpan = document.createElement('span');
