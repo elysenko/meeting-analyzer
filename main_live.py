@@ -182,6 +182,28 @@ async def lifespan(app):
     await _check_service_dns()
     asyncio.create_task(_backfill_meeting_chunks())
     asyncio.create_task(_backfill_document_processing())
+    # Recover upload jobs that were interrupted by a previous pod restart.
+    # - 'uploading': file never reached MinIO → can't reprocess, mark failed.
+    # - 'extracting'/'transcribing'/'analyzing': file is in MinIO → re-queue.
+    try:
+        async with app.state.db_pool.acquire() as _conn:
+            failed_status = await _conn.execute(
+                "UPDATE upload_jobs SET status='failed', error='Upload interrupted by server restart — please re-upload.', updated_at=NOW() "
+                "WHERE status='uploading'"
+            )
+            requeued_status = await _conn.execute(
+                "UPDATE upload_jobs SET status='queued', updated_at=NOW() "
+                "WHERE status IN ('extracting', 'transcribing', 'analyzing')"
+            )
+        # asyncpg returns "UPDATE N" strings; parse the count for logging
+        failed_n = int(failed_status.split()[-1]) if failed_status else 0
+        requeued_n = int(requeued_status.split()[-1]) if requeued_status else 0
+        if failed_n:
+            logger.info("Startup recovery: %d interrupted upload(s) marked failed", failed_n)
+        if requeued_n:
+            logger.info("Startup recovery: %d in-progress job(s) re-queued for reprocessing", requeued_n)
+    except Exception as _exc:
+        logger.warning("Startup job recovery failed: %s", _exc)
     asyncio.create_task(_upload_job_worker())
     # Pre-warm Keycloak OIDC metadata with internal endpoint URLs.
     # authlib fetches metadata from server_metadata_url and caches it, overwriting

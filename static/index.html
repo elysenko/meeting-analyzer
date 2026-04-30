@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Meeting Analyzer</title>
-<link rel="icon" type="image/svg+xml" href="/favicon.svg">
+<link rel="icon" type="image/svg+xml" href="favicon.svg">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=DM+Serif+Display&family=Literata:opsz,wght@7..72,400;7..72,500&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
@@ -3532,6 +3532,22 @@
     <div class="detail-date" id="detailDate"></div>
     <div id="detailContent"></div>
   </div>
+</div>
+
+<!-- Modals and overlays (must precede the script block so getElementById works at parse time) -->
+<div id="deleteModal" role="dialog" aria-modal="true" aria-labelledby="deleteModalMsg">
+  <div id="deleteModalBox">
+    <div id="deleteModalSpinner"></div>
+    <div id="deleteModalMsg">Deleting…</div>
+    <button id="deleteModalClose" onclick="_hideDeleteModal()">OK</button>
+  </div>
+</div>
+<!-- Mobile workspace card long-press context menu -->
+<div id="wsCardCtxBackdrop"></div>
+<div id="wsCardCtxMenu">
+  <div id="wsCardCtxTitle"></div>
+  <button class="ws-ctx-btn" id="wsCardCtxRename">Rename</button>
+  <button class="ws-ctx-btn danger" id="wsCardCtxDelete">Delete</button>
 </div>
 
 <script>
@@ -15778,19 +15794,5 @@ async function generateFromContext() {
 loadLLMModels().catch(function() {});
 loadLanding().then(function() { _initFromUrl(); });
 </script>
-<div id="deleteModal" role="dialog" aria-modal="true" aria-labelledby="deleteModalMsg">
-  <div id="deleteModalBox">
-    <div id="deleteModalSpinner"></div>
-    <div id="deleteModalMsg">Deleting…</div>
-    <button id="deleteModalClose" onclick="_hideDeleteModal()">OK</button>
-  </div>
-</div>
-<!-- Mobile workspace card long-press context menu -->
-<div id="wsCardCtxBackdrop"></div>
-<div id="wsCardCtxMenu">
-  <div id="wsCardCtxTitle"></div>
-  <button class="ws-ctx-btn" id="wsCardCtxRename">Rename</button>
-  <button class="ws-ctx-btn danger" id="wsCardCtxDelete">Delete</button>
-</div>
 </body>
 </html>

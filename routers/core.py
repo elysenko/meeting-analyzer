@@ -22,11 +22,13 @@ HTML_PAGE = (pathlib.Path(__file__).parent.parent / "static" / "index.html").rea
 
 _FAVICON_SVG = (
     '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">'
-    '<rect width="32" height="32" rx="6" fill="#1a1714"/>'
-    '<path d="M16 5a3.5 3.5 0 0 0-3.5 3.5v7a3.5 3.5 0 0 0 7 0v-7A3.5 3.5 0 0 0 16 5Z" '
-    'fill="none" stroke="#a07040" stroke-width="2" stroke-linecap="round"/>'
-    '<path d="M22 13v2a6 6 0 0 1-12 0v-2" fill="none" stroke="#a07040" stroke-width="2" stroke-linecap="round"/>'
-    '<line x1="16" y1="21" x2="16" y2="25" stroke="#a07040" stroke-width="2" stroke-linecap="round"/>'
+    '<rect width="32" height="32" rx="6" fill="#4a6fa5"/>'
+    '<g transform="translate(4,4)" fill="none" stroke="white" stroke-width="2.5"'
+    ' stroke-linecap="round" stroke-linejoin="round">'
+    '<path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/>'
+    '<path d="M19 10v2a7 7 0 0 1-14 0v-2"/>'
+    '<line x1="12" y1="19" x2="12" y2="22"/>'
+    '</g>'
     '</svg>'
 )
 
