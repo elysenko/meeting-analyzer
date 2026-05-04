@@ -23,6 +23,7 @@ from models import (
 from services.llm_prefs import _resolve_task_llm
 from services.llm_prefs_svc import _get_workspace_llm_preferences
 from services.research_svc import _get_template_config
+from services.streaming import keepalive_ndjson
 from services.utils import _json_dict, _json_line
 from services.workspace_svc import _ensure_user_workspace
 
@@ -532,9 +533,12 @@ async def generate_document(request: Request, workspace_id: int, body: GenerateR
                     _sections = _split_context_sections(context)
                     if len(_sections) >= 10:
                         yield json.dumps({"status": f"Extracting insights from {len(_sections)} sources..."}) + "\n"
-                        context_for_generation = await _map_reduce_synthesis(
-                            _sections, prompt_text, provider, model
+                        _synthesis_task = asyncio.create_task(
+                            _map_reduce_synthesis(_sections, prompt_text, provider, model)
                         )
+                        async for _hb in keepalive_ndjson(_synthesis_task, "Synthesizing sources…"):
+                            yield _hb
+                        context_for_generation = _synthesis_task.result()
                 yield json.dumps({"status": "Generating document..."}) + "\n"
                 generation_prompt = (
                     "Create a polished document in markdown. Return only the markdown body.\n\n"
@@ -551,13 +555,16 @@ async def generate_document(request: Request, workspace_id: int, body: GenerateR
                 )
                 if context_for_generation:
                     generation_prompt += f"Context:\n{context_for_generation}\n\n"
-                result = await _call_llm_runner(
+                _doc_task = asyncio.create_task(_call_llm_runner(
                     [{"role": "user", "content": generation_prompt}],
                     provider=provider,
                     model=model,
                     use_case="chat",
                     max_tokens=4200,
-                )
+                ))
+                async for _hb in keepalive_ndjson(_doc_task, "Generating document…"):
+                    yield _hb
+                result = _doc_task.result()
                 content = result["content"].strip()
                 filename = f'{_slugify(safe_title, 70) or "generated-document"}.md'
                 document = await _store_generated_document(
@@ -589,13 +596,16 @@ async def generate_document(request: Request, workspace_id: int, body: GenerateR
                 )
                 if context:
                     doc_prompt += f"Context:\n{context}\n\n"
-                payload, meta = await _call_llm_runner_json(
+                _struct_task = asyncio.create_task(_call_llm_runner_json(
                     [{"role": "user", "content": doc_prompt}],
                     provider=provider,
                     model=model,
                     use_case="chat",
                     max_tokens=4200,
-                )
+                ))
+                async for _hb in keepalive_ndjson(_struct_task, f"Generating {output_type.upper()} content…"):
+                    yield _hb
+                payload, meta = _struct_task.result()
                 payload = _json_dict(payload)
                 title = payload.get("title") or safe_title
                 if output_type == "pdf":

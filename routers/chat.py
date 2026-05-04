@@ -24,6 +24,7 @@ from llm import _call_llm_runner, _llm_runner_proxy_get, _stream_llm_runner
 from services import chat_svc as _chat_svc
 from services.llm_prefs import _resolve_task_llm
 from services.llm_prefs_svc import _get_workspace_llm_preferences
+from services.streaming import keepalive_sse
 from services.text_svc import _json_default, _json_line, _render_markdown_html
 from services.workspace_svc import _ensure_user_workspace
 
@@ -515,8 +516,8 @@ async def chat_generate_document(
 
             yield f"data: {json.dumps({'type': 'status', 'content': 'Building ' + fmt.upper() + '...'}, ensure_ascii=False)}\n\n"
 
-            # Run generation in a background task and emit keepalive status events
-            # every 20 s so the nginx proxy-read-timeout (180 s) is never hit.
+            # Run generation as a background task; keepalive_sse emits a
+            # heartbeat every 20 s so nginx proxy-read-timeout (180 s) is never hit.
             _gen_task = asyncio.create_task(_generate_structured_document(
                 workspace_id,
                 output_type=fmt,
@@ -524,14 +525,9 @@ async def chat_generate_document(
                 generation_prompt=generation_prompt,
                 branding={},
             ))
-            _HEARTBEAT = 20.0
-            while not _gen_task.done():
-                try:
-                    await asyncio.wait_for(asyncio.shield(_gen_task), timeout=_HEARTBEAT)
-                except asyncio.TimeoutError:
-                    yield f"data: {json.dumps({'type': 'status', 'content': 'Still generating…'}, ensure_ascii=False)}\n\n"
-            # Propagate any exception from the task into the outer try/except
-            result = _gen_task.result()
+            async for _hb in keepalive_sse(_gen_task, "Still generating…"):
+                yield _hb
+            result = _gen_task.result()  # re-raises any task exception
             document = result["document"]
             download_url = result["download_url"]
             filename = document["filename"]
