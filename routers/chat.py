@@ -515,13 +515,23 @@ async def chat_generate_document(
 
             yield f"data: {json.dumps({'type': 'status', 'content': 'Building ' + fmt.upper() + '...'}, ensure_ascii=False)}\n\n"
 
-            result = await _generate_structured_document(
+            # Run generation in a background task and emit keepalive status events
+            # every 20 s so the nginx proxy-read-timeout (180 s) is never hit.
+            _gen_task = asyncio.create_task(_generate_structured_document(
                 workspace_id,
                 output_type=fmt,
                 safe_title=safe_title,
                 generation_prompt=generation_prompt,
                 branding={},
-            )
+            ))
+            _HEARTBEAT = 20.0
+            while not _gen_task.done():
+                try:
+                    await asyncio.wait_for(asyncio.shield(_gen_task), timeout=_HEARTBEAT)
+                except asyncio.TimeoutError:
+                    yield f"data: {json.dumps({'type': 'status', 'content': 'Still generating…'}, ensure_ascii=False)}\n\n"
+            # Propagate any exception from the task into the outer try/except
+            result = _gen_task.result()
             document = result["document"]
             download_url = result["download_url"]
             filename = document["filename"]
