@@ -959,10 +959,10 @@
   .chat-session-strip::-webkit-scrollbar { height: 5px; }
   .chat-session-strip::-webkit-scrollbar-thumb { background: var(--border-light); border-radius: 3px; }
   .chat-session-card {
-    min-width: 220px; max-width: 280px;
+    min-width: 180px; max-width: 230px;
     background: var(--surface); border: 1px solid var(--border);
-    border-radius: 12px; padding: 0.75rem 0.85rem; cursor: pointer;
-    transition: all 0.2s; display: flex; flex-direction: column; gap: 0.35rem;
+    border-radius: 10px; padding: 0.55rem 0.65rem; cursor: pointer;
+    transition: all 0.2s; display: flex; flex-direction: column; gap: 0.25rem;
     flex-shrink: 0;
   }
   .chat-session-card:hover {
@@ -972,17 +972,17 @@
     border-color: var(--accent-dim); box-shadow: 0 0 0 1px rgba(74,111,165,0.12) inset;
   }
   .chat-session-title {
-    font-size: 0.88rem; color: var(--text); font-weight: 600;
+    font-size: 0.8rem; color: var(--text); font-weight: 600;
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   }
   .chat-session-meta {
-    font-family: 'JetBrains Mono', monospace; font-size: 0.67rem;
+    font-family: 'JetBrains Mono', monospace; font-size: 0.63rem;
     color: var(--text-dim); line-height: 1.45;
   }
   .chat-session-preview {
-    font-size: 0.76rem; color: var(--text-secondary); line-height: 1.45;
+    font-size: 0.7rem; color: var(--text-secondary); line-height: 1.45;
     display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
-    min-height: 2.2em;
+    min-height: 2em;
   }
   .msg-content > *:first-child { margin-top: 0; }
   .msg-content > *:last-child { margin-bottom: 0; }
@@ -2237,8 +2237,8 @@
       flex-wrap: wrap;
     }
 
-    /* Chat session cards smaller */
-    .chat-session-card { min-width: 180px; max-width: 240px; }
+    /* Chat session cards smaller on narrow viewports */
+    .chat-session-card { min-width: 150px; max-width: 195px; }
 
     /* Modal dialog smaller padding */
     .detail-overlay.active { padding: 2rem 0.75rem; }
