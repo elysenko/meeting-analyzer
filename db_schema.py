@@ -691,9 +691,12 @@ async def init_db(database_url: str) -> asyncpg.Pool:
                 updated_at TIMESTAMPTZ DEFAULT NOW()
             )
         """)
-        # Add Canvas token column to user_tokens
+        # Add Canvas token columns to user_tokens
         await conn.execute("ALTER TABLE user_tokens ADD COLUMN IF NOT EXISTS canvas_access_token TEXT")
         await conn.execute("ALTER TABLE user_tokens ADD COLUMN IF NOT EXISTS canvas_instance_url TEXT")
+        # Add Google token columns to user_tokens
+        await conn.execute("ALTER TABLE user_tokens ADD COLUMN IF NOT EXISTS google_access_token TEXT")
+        await conn.execute("ALTER TABLE user_tokens ADD COLUMN IF NOT EXISTS google_refresh_token TEXT")
         # ---- Live Q&A tables ----
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS live_qa_sessions (
