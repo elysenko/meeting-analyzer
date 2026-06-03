@@ -34,9 +34,9 @@ spec:
         - name: MINIO_BUCKET
           value: meeting-analyzer
         - name: MINIO_ACCESS_KEY
-          value: REPLACE_WITH_MINIO_ACCESS_KEY
+          value: minio-mp4reader
         - name: MINIO_SECRET_KEY
-          value: "REPLACE_WITH_MINIO_SECRET_KEY"
+          value: "minio-mp4reader-secret-2026"
         - name: APP_PATH_PREFIX
           value: "/meeting-analyzer"
         - name: KEYCLOAK_CALLBACK_URL

@@ -43,8 +43,8 @@ DATABASE_URL = os.getenv(
 # ---------------------------------------------------------------------------
 # MinIO / Object Storage
 # ---------------------------------------------------------------------------
-MINIO_ENDPOINT = os.getenv("MINIO_ENDPOINT", "minio.whisper.svc.cluster.local:9000")
-MINIO_BUCKET = os.getenv("MINIO_BUCKET", "mp4-reader")
+MINIO_ENDPOINT = os.getenv("MINIO_ENDPOINT", "minio.minio.svc.cluster.local:9000")
+MINIO_BUCKET = os.getenv("MINIO_BUCKET", "meeting-analyzer")
 MINIO_ACCESS_KEY = os.getenv("MINIO_ACCESS_KEY", "minio-mp4reader")
 MINIO_SECRET_KEY = os.getenv("MINIO_SECRET_KEY", "minio-mp4reader-secret-2026")
 
