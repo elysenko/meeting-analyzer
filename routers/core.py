@@ -99,16 +99,36 @@ async def health_live():
 
 @router.get("/health/ready")
 async def health_ready(request: Request):
-    """Readiness probe — checks database connectivity, returns 503 if down."""
+    """Readiness probe — checks all required dependencies.
+
+    Returns 200 with per-service status when everything is up,
+    or 503 with a structured breakdown so you can see exactly
+    which dependency is down without tailing pod logs.
+    """
+    services: dict = {}
+
+    # Database
     try:
         async with request.app.state.db_pool.acquire() as conn:
             await conn.fetchval("SELECT 1")
-        return {"status": "ready"}
+        services["database"] = {"ok": True}
     except Exception as exc:
-        return JSONResponse(
-            status_code=503,
-            content={"status": "not_ready", "error": str(exc)},
-        )
+        services["database"] = {"ok": False, "error": str(exc)}
+
+    # MinIO / object storage
+    minio_client = getattr(request.app.state, "minio_client", None)
+    minio_error = getattr(request.app.state, "minio_error", None)
+    if minio_client is not None:
+        services["storage"] = {"ok": True}
+    else:
+        services["storage"] = {
+            "ok": False,
+            "error": minio_error or "MinIO client not initialised — check pod logs for startup error",
+        }
+
+    all_ok = all(s["ok"] for s in services.values())
+    body = {"status": "ready" if all_ok else "not_ready", "services": services}
+    return JSONResponse(status_code=200 if all_ok else 503, content=body)
 
 
 @router.get("/healthz")

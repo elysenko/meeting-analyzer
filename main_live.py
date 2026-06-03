@@ -111,6 +111,7 @@ async def init_db():
 
 async def _init_minio():
     """Initialize MinIO client and ensure bucket exists."""
+    app.state.minio_error = None  # reset on each (re)init attempt
     try:
         import aiobotocore.session as aio_session
         session = aio_session.get_session()
@@ -131,8 +132,13 @@ async def _init_minio():
                 await client.create_bucket(Bucket=MINIO_BUCKET)
                 logger.info("MinIO bucket '%s' created", MINIO_BUCKET)
     except Exception as e:
-        logger.warning("MinIO init failed (documents will be unavailable): %s", e)
+        logger.warning(
+            "MinIO init failed (documents will be unavailable): %s — "
+            "endpoint=%s bucket=%s access_key=%s",
+            e, MINIO_ENDPOINT, MINIO_BUCKET, MINIO_ACCESS_KEY,
+        )
         app.state.minio_client = None
+        app.state.minio_error = str(e)
 
 
 async def _check_service_dns() -> None:
