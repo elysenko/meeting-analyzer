@@ -109,36 +109,74 @@ async def init_db():
     app.state.db_pool = await init_db_pool()
 
 
-async def _init_minio():
-    """Initialize MinIO client and ensure bucket exists."""
-    app.state.minio_error = None  # reset on each (re)init attempt
-    try:
-        import aiobotocore.session as aio_session
-        session = aio_session.get_session()
-        # Store session for later use; create client per-request via context manager
-        app.state.minio_client = session
-        # Verify connectivity and create bucket if missing
-        async with session.create_client(
-            "s3",
-            endpoint_url=f"http://{MINIO_ENDPOINT}",
-            aws_access_key_id=MINIO_ACCESS_KEY,
-            aws_secret_access_key=MINIO_SECRET_KEY,
-            region_name="us-east-1",
-        ) as client:
-            try:
-                await client.head_bucket(Bucket=MINIO_BUCKET)
-                logger.info("MinIO bucket '%s' ready", MINIO_BUCKET)
-            except Exception:
-                await client.create_bucket(Bucket=MINIO_BUCKET)
-                logger.info("MinIO bucket '%s' created", MINIO_BUCKET)
-    except Exception as e:
-        logger.warning(
-            "MinIO init failed (documents will be unavailable): %s — "
-            "endpoint=%s bucket=%s access_key=%s",
-            e, MINIO_ENDPOINT, MINIO_BUCKET, MINIO_ACCESS_KEY,
-        )
-        app.state.minio_client = None
-        app.state.minio_error = str(e)
+async def _init_minio() -> bool:
+    """Initialize MinIO client and ensure bucket exists.
+
+    Returns True on success, False on failure.
+    Retries up to _MINIO_STARTUP_RETRIES times with short delays so a
+    transient startup race (MinIO not ready when the pod launches) heals
+    automatically without requiring a pod restart.
+    """
+    _MINIO_STARTUP_RETRIES = 4
+    _MINIO_RETRY_DELAYS = [3, 5, 10, 20]  # seconds between attempts
+
+    import aiobotocore.session as aio_session  # noqa: PLC0415
+
+    for attempt in range(_MINIO_STARTUP_RETRIES + 1):
+        app.state.minio_error = None
+        try:
+            session = aio_session.get_session()
+            async with session.create_client(
+                "s3",
+                endpoint_url=f"http://{MINIO_ENDPOINT}",
+                aws_access_key_id=MINIO_ACCESS_KEY,
+                aws_secret_access_key=MINIO_SECRET_KEY,
+                region_name="us-east-1",
+            ) as client:
+                try:
+                    await client.head_bucket(Bucket=MINIO_BUCKET)
+                    logger.info("MinIO bucket '%s' ready", MINIO_BUCKET)
+                except Exception:
+                    await client.create_bucket(Bucket=MINIO_BUCKET)
+                    logger.info("MinIO bucket '%s' created", MINIO_BUCKET)
+            # Success — store the session and return
+            app.state.minio_client = session
+            return True
+        except Exception as e:
+            app.state.minio_client = None
+            app.state.minio_error = str(e)
+            if attempt < _MINIO_STARTUP_RETRIES:
+                delay = _MINIO_RETRY_DELAYS[attempt]
+                logger.warning(
+                    "MinIO init attempt %d/%d failed, retrying in %ds: %s",
+                    attempt + 1, _MINIO_STARTUP_RETRIES + 1, delay, e,
+                )
+                await asyncio.sleep(delay)
+            else:
+                logger.warning(
+                    "MinIO init failed after %d attempts (documents will be unavailable): %s — "
+                    "endpoint=%s bucket=%s access_key=%s — "
+                    "a background task will keep retrying every 60s",
+                    _MINIO_STARTUP_RETRIES + 1, e, MINIO_ENDPOINT, MINIO_BUCKET, MINIO_ACCESS_KEY,
+                )
+    return False
+
+
+async def _minio_recovery_task() -> None:
+    """Background task: retry MinIO init every 60 s until it succeeds.
+
+    Launched only when all startup attempts fail.  Stops itself on first
+    success so it does not linger once storage is healthy.
+    """
+    while True:
+        await asyncio.sleep(60)
+        if app.state.minio_client is not None:
+            return  # already recovered (e.g. by another path)
+        logger.info("MinIO recovery: retrying connection to %s …", MINIO_ENDPOINT)
+        success = await _init_minio()
+        if success:
+            logger.info("MinIO recovery: connected successfully — document storage restored")
+            return
 
 
 async def _check_service_dns() -> None:
@@ -184,7 +222,9 @@ async def _check_service_dns() -> None:
 async def lifespan(app):
     await init_db()
     app.state.llm_runner_service = create_llm_runner_service(LLM_RUNNER_URL)
-    await _init_minio()
+    minio_ok = await _init_minio()
+    if not minio_ok:
+        asyncio.create_task(_minio_recovery_task())
     await _check_service_dns()
     asyncio.create_task(_backfill_meeting_chunks())
     asyncio.create_task(_backfill_document_processing())
