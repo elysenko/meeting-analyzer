@@ -3611,6 +3611,19 @@ let settingsReturnView = 'landing';
 let currentAppScreen = 'landing';
 let uploadQueue = [];
 
+/* Upload job status labels — shared by the upload flow and the resume-on-reload path */
+const JOB_STATUS_LABELS = {
+  uploading: 'Saving file...',
+  queued: 'Queued for processing...',
+  extracting: 'Extracting audio...',
+  transcribing: 'Transcribing with Whisper (this may take a while)...',
+  analyzing: 'Analyzing with selected model...',
+  done: 'Analysis complete.',
+};
+
+/* Key used to persist an in-progress upload job across page reloads */
+const PENDING_JOB_KEY = 'meeting-analyzer:pending-upload-job';
+
 let _restoringFromPopstate = false;
 
 function _syncUrlState(push) {
@@ -11433,15 +11446,16 @@ async function startNextQueuedUpload() {
     const queued = await resp.json();
     const jobId = queued.job_id;
 
-    /* Poll /jobs/{id} until done or failed — works even if the tab is closed and reopened */
-    const STATUS_LABELS = {
-      uploading: 'Saving file...',
-      queued: 'Queued for processing...',
-      extracting: 'Extracting audio...',
-      transcribing: 'Transcribing with Whisper (this may take a while)...',
-      analyzing: 'Analyzing with selected model...',
-      done: 'Analysis complete.',
-    };
+    /* Persist the job ID so polling can resume if the page is hard-refreshed */
+    writeStoredJSON(PENDING_JOB_KEY, {
+      jobId: jobId,
+      workspaceId: uploadWorkspaceId,
+      workspaceName: uploadWorkspaceName,
+      filename: file.name,
+      at: Date.now()
+    });
+
+    /* Poll /jobs/{id} until done or failed */
     let finalResult = null;
     while (true) {
       await new Promise(function(r) { setTimeout(r, 3000); });
@@ -11449,7 +11463,7 @@ async function startNextQueuedUpload() {
       const pollResp = await fetch('/jobs/' + jobId);
       if (!pollResp.ok) throw new Error('Could not check job status.');
       const job = await pollResp.json();
-      const label = STATUS_LABELS[job.status] || job.status;
+      const label = JOB_STATUS_LABELS[job.status] || job.status;
       globalUploadState.status = label;
       renderGlobalActivityBar();
       if (uploadWorkspaceId === currentWorkspaceId) renderRecUploadSurface();
@@ -11461,6 +11475,7 @@ async function startNextQueuedUpload() {
     }
 
     if (!finalResult) throw new Error('No result received');
+    removeStoredJSON(PENDING_JOB_KEY);
     const hasQueuedItems = uploadQueue.length > 0;
     globalUploadState.active = false;
     globalUploadState.result = hasQueuedItems ? null : finalResult;
@@ -11480,6 +11495,7 @@ async function startNextQueuedUpload() {
   } catch (err) {
     const aborted = err && (err.name === 'AbortError' || (uploadAbortController && uploadAbortController.signal.aborted));
     uploadAbortController = null;
+    removeStoredJSON(PENDING_JOB_KEY);
     if (aborted) {
       uploadQueue = [];
       globalUploadState = emptyUploadState();
@@ -15790,9 +15806,114 @@ async function generateFromContext() {
   }
 }
 
+/* --- Resume pending upload job after hard refresh ---
+ * If the page was reloaded while a job was in-flight the jobId is gone from
+ * memory.  This function reads the persisted record from localStorage and
+ * either shows the result immediately (done/failed) or restores a lightweight
+ * polling loop so the user sees the job complete without re-uploading.
+ */
+async function resumePendingUploadJob() {
+  if (globalUploadState.active) return; // another upload is already running
+  const p = readStoredJSON(PENDING_JOB_KEY);
+  if (!p || !p.jobId) return;
+
+  // Discard records older than 24 h — the job is long gone
+  if (p.at && Date.now() - p.at > 86400000) { removeStoredJSON(PENDING_JOB_KEY); return; }
+
+  var jobId = p.jobId;
+  var wsId = p.workspaceId;
+  var wsName = p.workspaceName || '';
+  var fname = p.filename || 'Recording';
+
+  try {
+    var r = await fetch('/jobs/' + jobId);
+    if (!r.ok) { removeStoredJSON(PENDING_JOB_KEY); return; } // job not found
+    var job = await r.json();
+
+    if (job.status === 'done') {
+      removeStoredJSON(PENDING_JOB_KEY);
+      // Navigate to the completed meeting
+      if (document.getElementById('landingView').style.display !== 'none') loadLanding();
+      if (job.meeting_id && wsId && currentWorkspaceId === wsId) {
+        await loadWsMeetings();
+        showMeeting(job.meeting_id);
+      }
+      return;
+    }
+
+    if (job.status === 'failed') {
+      removeStoredJSON(PENDING_JOB_KEY);
+      globalUploadState.active = false;
+      globalUploadState.error = 'Upload from previous session failed: ' + (job.error || 'Processing error.');
+      globalUploadState.fileName = fname;
+      globalUploadState.workspaceId = wsId;
+      globalUploadState.workspaceName = wsName;
+      globalUploadState.completedAt = Date.now();
+      renderGlobalActivityBar();
+      return;
+    }
+
+    // Job is still in progress — restore the activity bar and keep polling
+    globalUploadState = {
+      active: true,
+      fileName: fname,
+      workspaceId: wsId,
+      workspaceName: wsName,
+      step: 'poll',
+      stepStartedAt: Date.now(),
+      status: JOB_STATUS_LABELS[job.status] || job.status,
+      result: null,
+      error: '',
+      startedAt: p.at || Date.now(),
+      completedAt: 0
+    };
+    renderGlobalActivityBar();
+
+    // Lightweight background polling loop (no abort controller — user can re-upload to cancel)
+    (async function pollResumed() {
+      while (true) {
+        await new Promise(function(res) { setTimeout(res, 4000); });
+        try {
+          var pr = await fetch('/jobs/' + jobId);
+          if (!pr.ok) { removeStoredJSON(PENDING_JOB_KEY); globalUploadState = emptyUploadState(); renderGlobalActivityBar(); return; }
+          var pj = await pr.json();
+          if (pj.status === 'done') {
+            removeStoredJSON(PENDING_JOB_KEY);
+            globalUploadState.active = false;
+            globalUploadState.result = pj.meeting_id ? { id: pj.meeting_id } : null;
+            globalUploadState.status = 'Analysis complete.';
+            globalUploadState.completedAt = Date.now();
+            renderGlobalActivityBar();
+            if (document.getElementById('landingView').style.display !== 'none') loadLanding();
+            if (pj.meeting_id && wsId && currentWorkspaceId === wsId) {
+              await loadWsMeetings();
+              showMeeting(pj.meeting_id);
+            }
+            return;
+          }
+          if (pj.status === 'failed') {
+            removeStoredJSON(PENDING_JOB_KEY);
+            globalUploadState.active = false;
+            globalUploadState.error = 'Upload failed: ' + (pj.error || 'Processing error.');
+            globalUploadState.completedAt = Date.now();
+            renderGlobalActivityBar();
+            return;
+          }
+          globalUploadState.status = JOB_STATUS_LABELS[pj.status] || pj.status;
+          renderGlobalActivityBar();
+        } catch (e) {
+          // transient network error — keep trying
+        }
+      }
+    })();
+  } catch (e) {
+    removeStoredJSON(PENDING_JOB_KEY);
+  }
+}
+
 /* --- Init --- */
 loadLLMModels().catch(function() {});
-loadLanding().then(function() { _initFromUrl(); });
+loadLanding().then(function() { _initFromUrl(); resumePendingUploadJob(); });
 </script>
 </body>
 </html>
