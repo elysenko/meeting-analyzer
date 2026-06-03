@@ -168,7 +168,7 @@ async def transcribe(audio_path: str) -> str:
                         logger.info("Transcribing chunk %d/%d: %s", index, len(chunk_paths), chunk_path)
                         transcript_parts.append((await _transcribe_single_file(chunk_path)).strip())
                         break
-                    except (httpx.ConnectError, httpx.TimeoutException) as exc:
+                    except (httpx.ConnectError, httpx.ReadError, httpx.TimeoutException) as exc:
                         if attempt >= WHISPER_RETRY_COUNT:
                             raise
                         wait = 3 + attempt * 3
@@ -195,7 +195,7 @@ async def transcribe(audio_path: str) -> str:
     for attempt in range(WHISPER_RETRY_COUNT + 1):
         try:
             return (await _transcribe_single_file(audio_path)).strip()
-        except (httpx.ConnectError, httpx.TimeoutException) as exc:
+        except (httpx.ConnectError, httpx.ReadError, httpx.TimeoutException) as exc:
             if attempt >= WHISPER_RETRY_COUNT:
                 raise
             wait = 3 + attempt * 3
