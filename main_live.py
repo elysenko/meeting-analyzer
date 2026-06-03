@@ -9255,7 +9255,9 @@ async def _backfill_meeting_chunks() -> None:
 async def _upload_job_worker() -> None:
     """Process upload_jobs rows in the background, one at a time."""
     logger.info("Upload job worker started")
+    _current_job_id: int | None = None
     while True:
+        _current_job_id = None
         try:
             async with app.state.db_pool.acquire() as conn:
                 job = await conn.fetchrow(
@@ -9277,6 +9279,7 @@ async def _upload_job_worker() -> None:
                 continue
 
             job_id = job["id"]
+            _current_job_id = job_id
             workspace_id = job["workspace_id"]
             user_id = job["user_id"]
             filename = job["filename"]
@@ -9376,7 +9379,10 @@ async def _upload_job_worker() -> None:
                                     pass
 
                 # Transcribe
-                await _set_status("transcribing")
+                try:
+                    await _set_status("transcribing")
+                except Exception:
+                    pass
                 try:
                     transcript = await transcribe(audio_path)
                     logger.info("Job %d: transcription done (%d chars)", job_id, len(transcript))
@@ -9390,7 +9396,10 @@ async def _upload_job_worker() -> None:
                     continue
 
                 # Analyze
-                await _set_status("analyzing")
+                try:
+                    await _set_status("analyzing")
+                except Exception:
+                    pass
                 try:
                     analysis, _ = await analyze_with_llm(transcript, workspace_id)
                     logger.info("Job %d: analysis done", job_id)
@@ -9412,7 +9421,18 @@ async def _upload_job_worker() -> None:
                     await _set_status("failed", f"Save failed: {e}")
 
         except Exception as exc:
-            logger.error("Upload job worker outer error: %s", exc)
+            logger.error("Upload job worker outer error (job=%s): %s", _current_job_id, exc)
+            if _current_job_id is not None:
+                try:
+                    async with app.state.db_pool.acquire() as _conn:
+                        await _conn.execute(
+                            "UPDATE upload_jobs SET status='failed', error=$1, updated_at=NOW() "
+                            "WHERE id=$2 AND status NOT IN ('done', 'failed')",
+                            f"Unexpected worker error: {exc}",
+                            _current_job_id,
+                        )
+                except Exception:
+                    pass  # best-effort; job will be re-queued on next pod restart
             await asyncio.sleep(5)
 
 
