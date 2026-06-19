@@ -12286,7 +12286,18 @@ def _content_disposition(disposition: str, filename: str) -> str:
 
 def _get_minio_client():
     if app.state.minio_client is None:
-        raise HTTPException(status_code=503, detail="Document storage not available.")
+        # Lazy re-initialization: minio_client can be None if MinIO was
+        # unavailable at startup or if this gunicorn worker's _init_minio()
+        # failed. Creating a session is synchronous — only actual I/O is async.
+        # We store the session so subsequent calls in this worker don't re-create it.
+        import aiobotocore.session as _aio_session
+        session = _aio_session.get_session()
+        app.state.minio_client = session
+        logger.warning(
+            "MinIO client was None at call time — lazily initialized. "
+            "endpoint=%s bucket=%s",
+            MINIO_ENDPOINT, MINIO_BUCKET,
+        )
     return app.state.minio_client.create_client(
         "s3",
         endpoint_url=f"http://{MINIO_ENDPOINT}",
