@@ -265,3 +265,14 @@ class CalendarEventUpdateRequest(BaseModel):
     end_time: str | None = None
     notes: str | None = None
     color: str | None = None
+
+
+class ICalSubscriptionCreate(BaseModel):
+    label: str
+    provider: str = "other"  # google | outlook | apple | other
+    url: str
+
+
+class ICalSubscriptionUpdate(BaseModel):
+    label: str | None = None
+    sync_enabled: bool | None = None

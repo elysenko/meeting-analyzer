@@ -3423,6 +3423,7 @@
     <div class="settings-layout">
       <div class="settings-sidebar">
         <button class="settings-nav-btn active" data-settings-panel="globalModelsPanel">Global Models</button>
+        <button class="settings-nav-btn" data-settings-panel="calendarSyncPanel">Calendar Sync</button>
       </div>
       <div>
         <div class="settings-panel active" id="globalModelsPanel">
@@ -3438,6 +3439,60 @@
             <div id="globalSettingsMeta" class="small-meta" style="margin-top:0.85rem"></div>
           </div>
         </div>
+
+        <!-- ===== Calendar Sync Panel ===== -->
+        <div class="settings-panel" id="calendarSyncPanel">
+          <div class="context-card">
+            <div class="label">Google Calendar <span class="label-line"></span></div>
+            <div class="small-note" style="margin-top:0.5rem">Sync your Google Calendar events directly. Requires Google Drive to be connected.</div>
+            <div style="margin-top:0.85rem;display:flex;align-items:center;gap:0.75rem;flex-wrap:wrap">
+              <span id="googleCalStatus" class="small-meta">Checking…</span>
+              <button id="googleCalSyncBtn" class="accent-btn" style="display:none">Sync Now</button>
+            </div>
+            <div id="googleCalResult" class="small-meta" style="margin-top:0.5rem"></div>
+          </div>
+
+          <div class="context-card" style="margin-top:1rem">
+            <div class="label">iCal Subscriptions <span class="label-line"></span></div>
+            <div class="small-note" style="margin-top:0.5rem">
+              Paste a private calendar URL (.ics / webcal) to sync events from Apple, Google, or Outlook.
+              Events appear in your My Calendar view under a <em>Calendar Sync</em> workspace.
+            </div>
+
+            <!-- Add subscription form -->
+            <div style="margin-top:0.85rem;display:grid;gap:0.5rem">
+              <select id="icalProviderSelect" class="plain-input" style="max-width:180px">
+                <option value="apple">Apple Calendar</option>
+                <option value="outlook">Outlook / Exchange</option>
+                <option value="google">Google Calendar</option>
+                <option value="other">Other</option>
+              </select>
+              <input id="icalLabelInput" class="plain-input" type="text" placeholder="Label (e.g. Work Calendar)" maxlength="200" style="max-width:340px">
+              <input id="icalUrlInput" class="plain-input" type="url" placeholder="https://… or webcal://…" style="max-width:480px">
+              <div>
+                <button id="addIcalSubBtn" class="accent-btn">Add Subscription</button>
+                <span id="icalAddStatus" class="small-meta" style="margin-left:0.75rem"></span>
+              </div>
+            </div>
+
+            <!-- Provider help -->
+            <details style="margin-top:0.75rem">
+              <summary class="small-meta" style="cursor:pointer;color:var(--accent)">Where do I find my calendar URL?</summary>
+              <div class="small-note" style="margin-top:0.5rem;line-height:1.6">
+                <strong>Apple iCloud:</strong> Calendar app → right-click calendar → Share Calendar → enable Public Calendar → copy link.<br>
+                <strong>Google Calendar:</strong> calendar.google.com → Settings → your calendar → "Private address in iCal format".<br>
+                <strong>Outlook.com:</strong> outlook.com → Calendar → Settings → Shared calendars → Publish calendar → ICS link.
+              </div>
+            </details>
+
+            <!-- Subscription list -->
+            <div id="icalSubList" style="margin-top:1rem;display:flex;flex-direction:column;gap:0.5rem">
+              <div class="small-meta">Loading…</div>
+            </div>
+          </div>
+        </div>
+        <!-- ===== /Calendar Sync Panel ===== -->
+
       </div>
     </div>
   </div>
@@ -7143,6 +7198,153 @@ function closeGlobalSettings() {
   renderGlobalActivityBar();
 }
 
+/* --- Calendar Sync Settings --- */
+async function loadCalendarSyncPanel() {
+  await Promise.all([loadGoogleCalStatus(), loadIcalSubs()]);
+}
+
+async function loadGoogleCalStatus() {
+  var statusEl = document.getElementById('googleCalStatus');
+  var syncBtn = document.getElementById('googleCalSyncBtn');
+  try {
+    var resp = await fetch('/calendar-sync/google/status');
+    var data = await resp.json();
+    if (data.connected) {
+      statusEl.textContent = '✅ Google account linked — Calendar access enabled';
+      syncBtn.style.display = '';
+    } else {
+      statusEl.innerHTML = '⚠️ Google not linked. <a href="#" id="googleLinkHint" style="color:var(--accent)">Connect via Google Drive first</a>.';
+      syncBtn.style.display = 'none';
+      var hint = document.getElementById('googleLinkHint');
+      if (hint) hint.addEventListener('click', function(e) {
+        e.preventDefault();
+        fetch('/drive/status').then(function(r) { return r.json(); }).then(function(d) {
+          if (d.link_url) window.location.href = d.link_url;
+        });
+      });
+    }
+  } catch (e) {
+    statusEl.textContent = 'Could not check Google status.';
+  }
+}
+
+document.getElementById('googleCalSyncBtn').addEventListener('click', async function() {
+  var btn = this;
+  var result = document.getElementById('googleCalResult');
+  btn.disabled = true;
+  btn.textContent = 'Syncing…';
+  result.textContent = '';
+  try {
+    var resp = await fetch('/calendar-sync/google/sync', { method: 'POST' });
+    var data = await resp.json();
+    if (!resp.ok) { result.textContent = '❌ ' + (data.detail || 'Sync failed'); return; }
+    result.textContent = '✅ Synced ' + data.synced + ' event(s)' + (data.deleted ? ', removed ' + data.deleted : '') + '.';
+  } catch (e) {
+    result.textContent = '❌ Network error';
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Sync Now';
+  }
+});
+
+async function loadIcalSubs() {
+  var listEl = document.getElementById('icalSubList');
+  listEl.innerHTML = '<div class="small-meta">Loading…</div>';
+  try {
+    var resp = await fetch('/calendar-sync/subscriptions');
+    var subs = await resp.json();
+    renderIcalSubs(subs);
+  } catch (e) {
+    listEl.innerHTML = '<div class="small-meta">Failed to load subscriptions.</div>';
+  }
+}
+
+function renderIcalSubs(subs) {
+  var listEl = document.getElementById('icalSubList');
+  if (!subs.length) {
+    listEl.innerHTML = '<div class="small-meta">No subscriptions yet.</div>';
+    return;
+  }
+  listEl.innerHTML = subs.map(function(s) {
+    var synced = s.last_synced_at ? 'Last synced ' + fmtDate(s.last_synced_at) : 'Never synced';
+    var errBadge = s.error_last ? '<span style="color:var(--red,#c0392b);margin-left:0.4rem" title="' + esc(s.error_last) + '">⚠ Error</span>' : '';
+    var provider = { apple: '🍎', google: 'G', outlook: '📅', other: '🔗' }[s.provider] || '🔗';
+    return '<div class="context-card" style="padding:0.6rem 0.8rem;display:flex;align-items:center;gap:0.6rem;flex-wrap:wrap" data-sub-id="' + s.id + '">' +
+      '<span style="font-size:1rem">' + provider + '</span>' +
+      '<div style="flex:1;min-width:0">' +
+        '<div style="font-weight:600;font-size:0.85rem">' + esc(s.label) + '</div>' +
+        '<div class="small-meta">' + synced + errBadge + '</div>' +
+      '</div>' +
+      '<button class="plain-btn ical-sync-btn" data-id="' + s.id + '" title="Sync now" style="font-size:0.78rem">↻ Sync</button>' +
+      '<label style="display:flex;align-items:center;gap:0.3rem;font-size:0.78rem;cursor:pointer">' +
+        '<input type="checkbox" class="ical-toggle" data-id="' + s.id + '"' + (s.sync_enabled ? ' checked' : '') + '> Auto' +
+      '</label>' +
+      '<button class="plain-btn ical-delete-btn" data-id="' + s.id + '" title="Remove" style="color:var(--text-dim)">✕</button>' +
+    '</div>';
+  }).join('');
+}
+
+document.getElementById('icalSubList').addEventListener('click', async function(e) {
+  var syncBtn = e.target.closest('.ical-sync-btn');
+  var delBtn = e.target.closest('.ical-delete-btn');
+  if (syncBtn) {
+    var id = syncBtn.dataset.id;
+    syncBtn.textContent = '…';
+    syncBtn.disabled = true;
+    try {
+      var r = await fetch('/calendar-sync/subscriptions/' + id + '/sync', { method: 'POST' });
+      var d = await r.json();
+      if (!r.ok) { alert('Sync failed: ' + (d.detail || r.status)); }
+      else { syncBtn.textContent = '✅ ' + d.synced; setTimeout(function() { syncBtn.textContent = '↻ Sync'; }, 2000); }
+    } catch (err) { alert('Network error'); }
+    finally { syncBtn.disabled = false; }
+  }
+  if (delBtn) {
+    if (!confirm('Remove this subscription? Synced events are kept.')) return;
+    var id = delBtn.dataset.id;
+    try {
+      await fetch('/calendar-sync/subscriptions/' + id, { method: 'DELETE' });
+      await loadIcalSubs();
+    } catch (err) { alert('Delete failed'); }
+  }
+});
+
+document.getElementById('icalSubList').addEventListener('change', async function(e) {
+  var toggle = e.target.closest('.ical-toggle');
+  if (!toggle) return;
+  var id = toggle.dataset.id;
+  await fetch('/calendar-sync/subscriptions/' + id, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ sync_enabled: toggle.checked }),
+  });
+});
+
+document.getElementById('addIcalSubBtn').addEventListener('click', async function() {
+  var label = document.getElementById('icalLabelInput').value.trim();
+  var url = document.getElementById('icalUrlInput').value.trim();
+  var provider = document.getElementById('icalProviderSelect').value;
+  var statusEl = document.getElementById('icalAddStatus');
+  if (!label || !url) { statusEl.textContent = 'Label and URL are required.'; return; }
+  statusEl.textContent = 'Adding…';
+  try {
+    var resp = await fetch('/calendar-sync/subscriptions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ label: label, provider: provider, url: url }),
+    });
+    var data = await resp.json();
+    if (!resp.ok) { statusEl.textContent = '❌ ' + (data.detail || 'Failed'); return; }
+    document.getElementById('icalLabelInput').value = '';
+    document.getElementById('icalUrlInput').value = '';
+    statusEl.textContent = '✅ Added';
+    setTimeout(function() { statusEl.textContent = ''; }, 2000);
+    await loadIcalSubs();
+  } catch (e) {
+    statusEl.textContent = '❌ Network error';
+  }
+});
+
 /* --- Landing --- */
 function buildFolderBreadcrumb() {
   const bc = folderBreadcrumbEl;
@@ -7871,6 +8073,7 @@ document.querySelectorAll('#globalSettingsView [data-settings-panel]').forEach(f
     document.querySelectorAll('#globalSettingsView .settings-panel').forEach(function(panel) { panel.classList.remove('active'); });
     btn.classList.add('active');
     document.getElementById(btn.dataset.settingsPanel).classList.add('active');
+    if (btn.dataset.settingsPanel === 'calendarSyncPanel') loadCalendarSyncPanel();
   });
 });
 

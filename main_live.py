@@ -251,6 +251,8 @@ async def lifespan(app):
     except Exception as _exc:
         logger.warning("Startup job recovery failed: %s", _exc)
     asyncio.create_task(_upload_job_worker())
+    from routers.calendar_sync import background_ical_sync  # noqa: PLC0415
+    asyncio.create_task(background_ical_sync(app))
     # Pre-warm Keycloak OIDC metadata with internal endpoint URLs.
     # authlib fetches metadata from server_metadata_url and caches it, overwriting
     # any pre-configured values. We populate the cache here so the fetched
@@ -1610,7 +1612,7 @@ async def drive_status(request: Request):
         f"?client_id={GOOGLE_PICKER_CLIENT_ID}"
         f"&redirect_uri={quote(os.getenv('GOOGLE_DRIVE_REDIRECT_URI', 'https://ubuntu.desmana-truck.ts.net:8443/drive/callback'))}"
         f"&response_type=code&access_type=offline&prompt=consent"
-        f"&scope={quote('https://www.googleapis.com/auth/drive.readonly')}"
+        f"&scope={quote('https://www.googleapis.com/auth/drive.readonly https://www.googleapis.com/auth/calendar.readonly')}"
         f"&state={state_payload}"
     )
     return {
@@ -13917,12 +13919,14 @@ async def ws_transcribe(ws: WebSocket):
 # Starlette's route table).  Once a router's @app decorators are removed from
 # main_live.py, the router version becomes the live handler automatically.
 # ---------------------------------------------------------------------------
-from routers.chat import router as _chat_router          # noqa: E402
-from routers.generate import router as _generate_router  # noqa: E402
-from routers.integrations import router as _integrations_router  # noqa: E402
-from routers.live import router as _live_router          # noqa: E402
-from routers.research import router as _research_router  # noqa: E402
+from routers.calendar_sync import router as _calendar_sync_router  # noqa: E402
+from routers.chat import router as _chat_router                    # noqa: E402
+from routers.generate import router as _generate_router            # noqa: E402
+from routers.integrations import router as _integrations_router    # noqa: E402
+from routers.live import router as _live_router                    # noqa: E402
+from routers.research import router as _research_router            # noqa: E402
 
+app.include_router(_calendar_sync_router)
 app.include_router(_chat_router)
 app.include_router(_generate_router)
 app.include_router(_integrations_router)
