@@ -12288,7 +12288,16 @@ def _content_disposition(disposition: str, filename: str) -> str:
 
 def _get_minio_client():
     if app.state.minio_client is None:
-        raise HTTPException(status_code=503, detail="Document storage not available.")
+        # Lazy fallback: a startup MinIO-init race can leave the client None even
+        # when MinIO is actually up. Create the session on first use instead of
+        # hard-failing the request with a 503 (rescued live prod hotfix).
+        import aiobotocore.session as _aio_session
+        session = _aio_session.get_session()
+        app.state.minio_client = session
+        logger.warning(
+            "MinIO client was None at call time — lazily initialized. endpoint=%s bucket=%s",
+            MINIO_ENDPOINT, MINIO_BUCKET,
+        )
     return app.state.minio_client.create_client(
         "s3",
         endpoint_url=f"http://{MINIO_ENDPOINT}",
