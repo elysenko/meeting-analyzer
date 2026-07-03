@@ -12784,25 +12784,60 @@ async function sendChat() {
   syncChatControlState();
 
   try {
-    const resp = await fetch('/v1/chat/turn', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(Object.assign({
+    /* Stream tokens progressively so the user sees output as the LLM generates it
+       instead of waiting ~30 s for the full response. */
+    let _streamText = '';
+    let _streamStoredMsg = null;
+    let _streamUsage = {};
+    let _streamEl = null;
+    let _thinkingRemoved = false;
+
+    await llmRunnerApi.streamChatTurn(
+      Object.assign({
         workspace_id: currentWorkspaceId,
         chat_session_id: currentChatSessionId,
         messages: currentChatMessages,
         attachment_ids: activeAttachments
-      }, contextSelection)),
-      signal: controller.signal
-    });
-    if (!resp.ok) throw new Error(await parseJSONError(resp, 'Chat failed.'));
-    const payload = await resp.json();
+      }, contextSelection),
+      {
+        signal: controller.signal,
+        onEvent: async function(event) {
+          if (event.type === 'text_delta') {
+            /* Remove thinking indicator and create the assistant bubble on first token. */
+            if (!_thinkingRemoved) {
+              _thinkingRemoved = true;
+              if (thinkingEl) thinkingEl.remove();
+              _streamEl = addChatMessage('assistant', '');
+            }
+            _streamText += event.content || '';
+            var _contentEl = _streamEl && _streamEl.querySelector('.msg-content');
+            if (_contentEl) {
+              _contentEl.innerHTML = _simpleMarkdown(_streamText);
+              scrollChat();
+            }
+          } else if (event.type === 'done') {
+            _streamStoredMsg = event.message || null;
+            _streamUsage = event.usage || {};
+            /* Prefer server-stored content (may be slightly cleaned up). */
+            if (_streamStoredMsg && _streamStoredMsg.content) _streamText = _streamStoredMsg.content;
+            /* Swap in pre-rendered HTML if the server sent it. */
+            if (_streamEl && _streamStoredMsg && _streamStoredMsg.content_html) {
+              var _finalContentEl = _streamEl.querySelector('.msg-content');
+              if (_finalContentEl) _finalContentEl.innerHTML = _streamStoredMsg.content_html;
+            }
+          } else if (event.type === 'error') {
+            throw new Error(event.content || 'LLM runner error');
+          }
+        }
+      }
+    );
 
-    if (thinkingEl) thinkingEl.remove();
-    const storedMsg = payload.message || null;
-    const responseText = (storedMsg && storedMsg.content) || payload.content || '';
-    const responseHtml = (storedMsg && storedMsg.content_html) || null;
-    const assistantEl = addChatMessage('assistant', responseText, { html: responseHtml });
+    /* Guard: remove thinking dots if no text_delta events arrived (e.g. tool-only response). */
+    if (!_thinkingRemoved && thinkingEl) thinkingEl.remove();
+    if (!_streamEl) _streamEl = addChatMessage('assistant', _streamText || '');
+    const storedMsg = _streamStoredMsg;
+    const responseText = _streamText;
+    const assistantEl = _streamEl;
     if (storedMsg && storedMsg.id != null) assistantEl.dataset.chatMessageId = String(storedMsg.id);
     if (responseText) appendChatMessageToHistory({ role: 'assistant', content: responseText });
     /* Unblock the UI immediately so the user can send a follow-up while the
@@ -12810,7 +12845,7 @@ async function sendChat() {
     if (activeChatRequestController === controller) activeChatRequestController = null;
     syncChatControlState();
     await loadChatSessions(true, currentChatSessionId, { skipOpen: true }).catch(function() {});
-    var usageInfo = payload.usage || {};
+    var usageInfo = _streamUsage;
     var tokenStr = (usageInfo.input_tokens || usageInfo.output_tokens)
       ? (usageInfo.input_tokens || 0) + ' in / ' + (usageInfo.output_tokens || 0) + ' out'
       : '';
