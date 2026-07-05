@@ -3578,6 +3578,7 @@
         <button class="accent-btn small-btn" id="detailMoveBtn" type="button">Move</button>
       </div>
       <div class="detail-actions-right">
+        <button class="accent-btn small-btn" id="detailChatBtn" type="button" style="display:none">Chat</button>
         <button class="accent-btn small-btn" id="detailRenameBtn" type="button" style="display:none">Rename</button>
         <button class="accent-btn small-btn" id="detailAnalyzeDocBtn" type="button" style="display:none">Analyze</button>
         <button class="del-ws-btn" id="detailDeleteBtn" type="button" style="display:none">Delete Meeting</button>
@@ -11724,6 +11725,7 @@ function resetDetailActions() {
   currentDetailDocumentId = null;
   document.getElementById('detailDeleteBtn').style.display = 'none';
   document.getElementById('detailRenameBtn').style.display = 'none';
+  document.getElementById('detailChatBtn').style.display = 'none';
   document.getElementById('detailMoveWrap').style.display = 'none';
   document.getElementById('detailAnalyzeDocBtn').style.display = 'none';
 }
