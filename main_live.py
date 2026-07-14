@@ -3760,6 +3760,50 @@ async def update_meeting(meeting_id: int, body: dict):
     return {"ok": True, "title": title}
 
 
+@app.post("/meetings/{meeting_id}/reanalyze")
+async def reanalyze_meeting(meeting_id: int, request: Request):
+    """Re-run LLM analysis on a meeting that already has a stored transcript.
+
+    Useful when the initial analysis failed (e.g. LLM rate limit).  Fetches
+    the transcript already in the database, re-invokes analyze_with_llm(), and
+    updates the meeting record in place.  Returns 503 if the LLM is still
+    unavailable so the caller can show a "try again later" message.
+    """
+    async with app.state.db_pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT id, transcript, workspace_id FROM meetings WHERE id = $1",
+            meeting_id,
+        )
+    if not row:
+        raise HTTPException(status_code=404, detail="Meeting not found")
+    if not (row["transcript"] or "").strip():
+        raise HTTPException(status_code=400, detail="No transcript stored — please re-upload the recording")
+
+    analysis, _ = await analyze_with_llm(row["transcript"], row["workspace_id"])
+
+    if (analysis.get("summary") or "") == "Analysis failed.":
+        raise HTTPException(
+            status_code=503,
+            detail="Analysis still unavailable — the LLM may be rate-limited. Try again later.",
+        )
+
+    async with app.state.db_pool.acquire() as conn:
+        await conn.execute(
+            """UPDATE meetings
+               SET title = $1, summary = $2, action_items = $3::jsonb,
+                   todos = $4::jsonb, email_body = $5
+               WHERE id = $6""",
+            analysis.get("title") or "Untitled Meeting",
+            analysis.get("summary", ""),
+            json.dumps(analysis.get("action_items", [])),
+            json.dumps(analysis.get("todos", [])),
+            analysis.get("email_body", ""),
+            meeting_id,
+        )
+
+    return {"ok": True, "meeting_id": meeting_id, "title": analysis.get("title")}
+
+
 @app.patch("/meetings/{meeting_id}/workspace")
 async def move_meeting_to_workspace(request: Request, meeting_id: int, body: MeetingWorkspaceUpdate):
     target_workspace_id = body.workspace_id

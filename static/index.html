@@ -11568,7 +11568,10 @@ async function showMeeting(id) {
     ].join(' · ');
 
     let html = '';
-    html += `<div class="result-section"><div class="label">Summary <span class="label-line"></span></div><p id="detailSummary">${esc(m.summary)}</p><button class="tts-btn" onclick="toggleTTS('detailSummary', this)">Read Aloud</button><div style="clear:both"></div></div>`;
+    const analysisFailedBtn = (m.summary === 'Analysis failed.')
+      ? `<button class="tts-btn" style="margin-left:0.5rem;color:#b44" onclick="reanalyzeMeeting(${m.id})">Retry Analysis</button>`
+      : '';
+    html += `<div class="result-section"><div class="label">Summary <span class="label-line"></span></div><p id="detailSummary">${esc(m.summary)}</p><button class="tts-btn" onclick="toggleTTS('detailSummary', this)">Read Aloud</button>${analysisFailedBtn}<div style="clear:both"></div></div>`;
     html += '<div class="result-section"><div class="label">To Dos <span class="label-line"></span></div><ul>';
     (m.todos || []).forEach(function(item) {
       let text = esc(item.task || '');
@@ -11590,6 +11593,25 @@ async function showMeeting(id) {
 
     openDetailModal(m.title, detailMeta, html);
   } catch (e) { /* ignore */ }
+}
+
+async function reanalyzeMeeting(id) {
+  const btn = document.querySelector('[onclick="reanalyzeMeeting(' + id + ')"]');
+  if (btn) { btn.disabled = true; btn.textContent = 'Analyzing…'; }
+  try {
+    const resp = await fetch('/meetings/' + id + '/reanalyze', { method: 'POST' });
+    if (!resp.ok) {
+      const body = await resp.json().catch(function() { return {}; });
+      const msg = (body.detail) || 'Analysis failed. Try again later.';
+      alert(msg);
+      if (btn) { btn.disabled = false; btn.textContent = 'Retry Analysis'; }
+      return;
+    }
+    await showMeeting(id);
+  } catch (e) {
+    alert('Network error. Please try again.');
+    if (btn) { btn.disabled = false; btn.textContent = 'Retry Analysis'; }
+  }
 }
 
 function expandDocPreview() {
