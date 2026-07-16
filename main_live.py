@@ -13925,6 +13925,7 @@ from routers.generate import router as _generate_router            # noqa: E402
 from routers.integrations import router as _integrations_router    # noqa: E402
 from routers.live import router as _live_router                    # noqa: E402
 from routers.research import router as _research_router            # noqa: E402
+from routers.colossus import router as _colossus_router            # noqa: E402
 
 app.include_router(_calendar_sync_router)
 app.include_router(_chat_router)
@@ -13932,3 +13933,4 @@ app.include_router(_generate_router)
 app.include_router(_integrations_router)
 app.include_router(_live_router)
 app.include_router(_research_router)
+app.include_router(_colossus_router)
