@@ -3239,6 +3239,16 @@
             </div>
           </div>
           <div class="context-card" style="margin-top:1rem">
+            <div class="label">Colossus Project <span class="label-line"></span></div>
+            <div class="small-note" style="margin-top:0.5rem">Link this workspace to a Colossus project to send distilled specs and plans from meeting discussions.</div>
+            <div id="wsColossusStatus" style="margin-top:0.5rem;font-size:0.85rem"></div>
+            <div class="settings-actions" style="margin-top:0.5rem">
+              <button id="wsColossusConnectBtn" class="accent-btn" style="display:none">Connect Colossus</button>
+              <button id="wsColossusLinkBtn" class="accent-btn" style="display:none">Link Project</button>
+              <button id="wsColossusUnlinkBtn" class="del-ws-btn" style="display:none">Unlink</button>
+            </div>
+          </div>
+          <div class="context-card" style="margin-top:1rem">
             <div class="label">Sharing <span class="label-line"></span></div>
             <div class="small-note" style="margin-top:0.5rem">Share this workspace with other users. They must have logged in at least once.</div>
             <div id="wsShareList" style="margin-top:0.5rem"></div>
@@ -7185,6 +7195,209 @@ document.getElementById('wsCanvasUnlinkBtn').addEventListener('click', async fun
   refreshCanvasStatus();
 });
 
+/* ---- Colossus project link (mirrors the Canvas provider-card convention) ---- */
+let colossusGlobalStatus = null;
+
+async function refreshColossusStatus() {
+  if (!currentWorkspaceId) return;
+  var el = document.getElementById('wsColossusStatus');
+  var connectBtn = document.getElementById('wsColossusConnectBtn');
+  var linkBtn = document.getElementById('wsColossusLinkBtn');
+  var unlinkBtn = document.getElementById('wsColossusUnlinkBtn');
+  if (!el) return;
+  try {
+    var globalResp = await fetch('/colossus/status');
+    colossusGlobalStatus = await globalResp.json();
+    var wsResp = await fetch('/workspaces/' + currentWorkspaceId + '/colossus-status');
+    var wsStatus = await wsResp.json();
+    if (!colossusGlobalStatus.connected) {
+      el.innerHTML = '<span style="color:#888">Colossus not connected.</span>';
+      connectBtn.style.display = '';
+      linkBtn.style.display = 'none';
+      unlinkBtn.style.display = 'none';
+    } else if (wsStatus.linked) {
+      var stepNote = (wsStatus.project && wsStatus.project.currentStep) ? ' &middot; step: ' + esc(wsStatus.project.currentStep) : '';
+      var html = '<div style="display:flex;align-items:center;gap:0.5rem;padding:0.25rem 0" data-testid="ma-ws-colossus-linked">' +
+        '<svg viewBox="0 0 24 24" width="18" height="18" fill="#5f3dc4"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/></svg>' +
+        '<strong>' + esc(wsStatus.project_name || 'Linked Project') + '</strong><span style="font-size:0.75rem;color:#888">' + stepNote + '</span></div>';
+      if (wsStatus.linked_at) {
+        html += '<div style="font-size:0.75rem;color:#888;margin-top:0.25rem">Linked: ' + new Date(wsStatus.linked_at).toLocaleString() + '</div>';
+      }
+      el.innerHTML = html;
+      connectBtn.style.display = 'none';
+      linkBtn.style.display = 'none';
+      unlinkBtn.style.display = '';
+    } else {
+      el.innerHTML = '<span style="color:#888">Connected. No project linked.</span>';
+      connectBtn.style.display = 'none';
+      linkBtn.style.display = '';
+      unlinkBtn.style.display = 'none';
+    }
+  } catch (e) {
+    el.textContent = 'Could not check Colossus status.';
+    connectBtn.style.display = '';
+    linkBtn.style.display = 'none';
+    unlinkBtn.style.display = 'none';
+  }
+}
+
+document.getElementById('wsColossusConnectBtn').addEventListener('click', function() {
+  openColossusConnectModal();
+});
+
+function openColossusConnectModal() {
+  var overlay = document.createElement('div');
+  overlay.style.cssText = 'position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.5);z-index:10001;display:flex;align-items:center;justify-content:center';
+  var modal = document.createElement('div');
+  modal.style.cssText = 'background:white;border-radius:12px;padding:1.5rem;width:90%;max-width:450px;display:flex;flex-direction:column';
+  modal.innerHTML = '<div style="font-weight:600;margin-bottom:0.5rem;display:flex;justify-content:space-between"><span>Connect Colossus</span><button style="background:none;border:none;font-size:1.2rem;cursor:pointer" data-close>&times;</button></div>' +
+    '<div class="small-note" style="margin-bottom:1rem">Paste your Colossus connect token. Mint one in Colossus under Settings &rarr; Integrations &rarr; Meeting Analyzer.</div>' +
+    '<input type="password" id="colossusTokenInput" class="plain-input" placeholder="colossus_cak_..." style="margin-bottom:0.75rem" data-testid="ma-colossus-token-input">' +
+    '<div id="colossusConnectError" style="color:#c0392b;font-size:0.8rem;display:none;margin-bottom:0.5rem"></div>' +
+    '<button class="accent-btn" id="colossusConnectSubmit" data-testid="ma-colossus-connect-submit">Connect</button>';
+  overlay.appendChild(modal);
+  document.body.appendChild(overlay);
+  addCloseListener(modal, overlay);
+  modal.querySelector('#colossusConnectSubmit').addEventListener('click', async function() {
+    var btn = this;
+    var tokenInput = modal.querySelector('#colossusTokenInput');
+    var errorEl = modal.querySelector('#colossusConnectError');
+    var token = tokenInput.value.trim();
+    if (!token) { errorEl.textContent = 'Please paste your connect token.'; errorEl.style.display = ''; return; }
+    btn.disabled = true;
+    btn.textContent = 'Connecting...';
+    errorEl.style.display = 'none';
+    try {
+      var resp = await fetch('/colossus/connect', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token: token })
+      });
+      var result = await resp.json();
+      if (!resp.ok) {
+        errorEl.textContent = result.detail || 'Failed to connect.';
+        errorEl.style.display = '';
+        btn.disabled = false;
+        btn.textContent = 'Connect';
+        return;
+      }
+      overlay.remove();
+      refreshColossusStatus();
+    } catch (e) {
+      errorEl.textContent = 'Connection error.';
+      errorEl.style.display = '';
+      btn.disabled = false;
+      btn.textContent = 'Connect';
+    }
+  });
+}
+
+document.getElementById('wsColossusLinkBtn').addEventListener('click', function() {
+  openColossusLinkModal();
+});
+
+async function openColossusLinkModal() {
+  if (!colossusGlobalStatus || !colossusGlobalStatus.connected) {
+    openColossusConnectModal();
+    return;
+  }
+  var overlay = document.createElement('div');
+  overlay.style.cssText = 'position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.5);z-index:10001;display:flex;align-items:center;justify-content:center';
+  var modal = document.createElement('div');
+  modal.style.cssText = 'background:white;border-radius:12px;padding:1.5rem;width:90%;max-width:450px;display:flex;flex-direction:column';
+  modal.innerHTML = '<div style="font-weight:600;margin-bottom:0.5rem;display:flex;justify-content:space-between"><span>Link Colossus Project</span><button style="background:none;border:none;font-size:1.2rem;cursor:pointer" data-close>&times;</button></div>' +
+    '<div class="small-note" style="margin-bottom:1rem">Pick an existing project, or create a new one for this workspace.</div>' +
+    '<select id="colossusProjectSelect" class="plain-select" style="width:100%;padding:0.5rem;margin-bottom:0.75rem" data-testid="ma-colossus-project-select"><option value="">Loading projects...</option></select>' +
+    '<div style="display:flex;align-items:center;gap:0.5rem;margin-bottom:0.75rem;color:#888;font-size:0.8rem"><span style="flex:1;border-top:1px solid #ddd"></span>or<span style="flex:1;border-top:1px solid #ddd"></span></div>' +
+    '<input type="text" id="colossusNewProjectName" class="plain-input" placeholder="Create new project (name)" style="margin-bottom:0.75rem" data-testid="ma-colossus-new-name">' +
+    '<div id="colossusLinkError" style="color:#c0392b;font-size:0.8rem;display:none;margin-bottom:0.5rem"></div>' +
+    '<button class="accent-btn" id="colossusLinkSubmit" disabled data-testid="ma-colossus-link-submit">Link Project</button>';
+  overlay.appendChild(modal);
+  document.body.appendChild(overlay);
+  addCloseListener(modal, overlay);
+  var selectEl = modal.querySelector('#colossusProjectSelect');
+  var nameEl = modal.querySelector('#colossusNewProjectName');
+  var linkBtn = modal.querySelector('#colossusLinkSubmit');
+  var errorEl = modal.querySelector('#colossusLinkError');
+  try {
+    var resp = await fetch('/colossus/projects');
+    var data = await resp.json();
+    var projects = (data.projects || []).filter(function(p) { return !p.linked; });
+    if (!projects.length) {
+      selectEl.innerHTML = '<option value="">No unlinked projects — create one below</option>';
+    } else {
+      selectEl.innerHTML = '<option value="">Select a project...</option>' + projects.map(function(p) {
+        return '<option value="' + p.id + '" data-name="' + esc(p.name) + '">' + esc(p.name) + (p.currentStep ? ' (' + esc(p.currentStep) + ')' : '') + '</option>';
+      }).join('');
+    }
+  } catch (e) {
+    selectEl.innerHTML = '<option value="">Failed to load projects</option>';
+  }
+  function syncButtonState() {
+    var hasPick = !!selectEl.value;
+    var hasName = !!nameEl.value.trim();
+    linkBtn.disabled = !(hasPick || hasName);
+    linkBtn.textContent = hasName && !hasPick ? 'Create & Link' : 'Link Project';
+  }
+  selectEl.addEventListener('change', function() { if (this.value) nameEl.value = ''; syncButtonState(); });
+  nameEl.addEventListener('input', function() { if (this.value.trim()) selectEl.value = ''; syncButtonState(); });
+  linkBtn.addEventListener('click', async function() {
+    var btn = this;
+    var deploymentId = selectEl.value;
+    var projectName = deploymentId ? (selectEl.options[selectEl.selectedIndex].getAttribute('data-name') || '') : '';
+    var newName = nameEl.value.trim();
+    btn.disabled = true;
+    btn.textContent = 'Linking...';
+    errorEl.style.display = 'none';
+    try {
+      if (!deploymentId && newName) {
+        var createResp = await fetch('/colossus/projects', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: newName })
+        });
+        var created = await createResp.json();
+        if (!createResp.ok) {
+          errorEl.textContent = created.detail || 'Failed to create project.';
+          errorEl.style.display = '';
+          btn.disabled = false;
+          syncButtonState();
+          return;
+        }
+        deploymentId = created.project && created.project.id;
+        projectName = (created.project && created.project.name) || newName;
+      }
+      if (!deploymentId) { btn.disabled = false; syncButtonState(); return; }
+      var resp = await fetch('/workspaces/' + currentWorkspaceId + '/colossus-link', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ deployment_id: deploymentId, project_name: projectName })
+      });
+      var result = await resp.json();
+      if (!resp.ok) {
+        errorEl.textContent = result.detail || 'Failed to link project.';
+        errorEl.style.display = '';
+        btn.disabled = false;
+        syncButtonState();
+        return;
+      }
+      overlay.remove();
+      refreshColossusStatus();
+    } catch (e) {
+      errorEl.textContent = 'Connection error.';
+      errorEl.style.display = '';
+      btn.disabled = false;
+      syncButtonState();
+    }
+  });
+}
+
+document.getElementById('wsColossusUnlinkBtn').addEventListener('click', async function() {
+  if (!confirm('Unlink this workspace from its Colossus project? Sent specs/plans in Colossus are kept.')) return;
+  await fetch('/workspaces/' + currentWorkspaceId + '/colossus-link', { method: 'DELETE' });
+  refreshColossusStatus();
+});
+
 async function openGlobalSettings() {
   settingsReturnView = currentWorkspaceId ? 'workspace' : 'landing';
   showAppScreen('settings');
@@ -8106,7 +8319,7 @@ function activateWorkspaceTab(tabId) {
     loadLiveQAContext();
     loadLiveQAHistory();
   }
-  if (tabId === 'wsSettingsTab') { refreshDriveStatus(); refreshCanvasStatus(); }
+  if (tabId === 'wsSettingsTab') { refreshDriveStatus(); refreshCanvasStatus(); refreshColossusStatus(); }
   if (tabId === 'wsDocumentsTab') { renderDocumentUploadSurface(); loadDocuments(); }
   if (tabId === 'wsResearchTab') {
     restoreResearchDraft();
