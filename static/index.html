@@ -3395,6 +3395,11 @@
           <input type="file" id="chatFileInput" style="display:none" accept=".pdf,.docx,.doc,.xlsx,.xls,.pptx,.txt,.md,.csv,.json,.yaml,.yml">
           <div class="chat-input-row">
             <textarea id="chatInput" placeholder="Ask about your meetings, documents, or research. Slash commands like /qr work here too." rows="1"></textarea>
+            <button id="chatColossusSendBtn" class="chat-attach-btn" title="Distill this discussion and send it to the linked Colossus project" type="button" data-testid="ma-colossus-send-btn">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2z"/><path d="M8 12l3 3 5-6"/>
+              </svg>
+            </button>
             <button id="chatAttachBtn" class="chat-attach-btn" title="Attach a file for analysis" type="button">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                 <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/>
@@ -7397,6 +7402,34 @@ document.getElementById('wsColossusUnlinkBtn').addEventListener('click', async f
   await fetch('/workspaces/' + currentWorkspaceId + '/colossus-link', { method: 'DELETE' });
   refreshColossusStatus();
 });
+
+async function sendChatToColossus() {
+  if (!currentWorkspaceId || !currentChatSessionId) {
+    alert('Open a discussion first, then send it to Colossus.');
+    return;
+  }
+  if (!confirm('Distill this discussion and send it to the linked Colossus project?')) return;
+  var statusEl = addChatMessage('assistant', '', { html: '<em>Distilling & sending to Colossus\u2026</em>' });
+  var contentEl = statusEl.querySelector('.msg-content');
+  try {
+    var resp = await fetch('/workspaces/' + currentWorkspaceId + '/chat/sessions/' + currentChatSessionId + '/colossus-send', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({})
+    });
+    var result = await resp.json();
+    if (!resp.ok) {
+      if (contentEl) contentEl.innerHTML = '<span style="color:#c0392b">Send to Colossus failed: ' + esc(result.detail || 'unknown error') + '</span>';
+      return;
+    }
+    var routed = result.routed_to === 'spec-message' ? 'the Spec agent chat' : (result.routed_to === 'plan' ? 'the Plans tab' : (result.routed_to || 'Colossus'));
+    if (contentEl) contentEl.innerHTML = '<span data-testid="ma-colossus-send-result">\u2705 Sent to Colossus \u2192 ' + esc(routed) + ': \u201C' + esc(result.title || '') + '\u201D' + (result.replay ? ' <span style="color:#888">(replay \u2014 already sent)</span>' : '') + '</span>';
+  } catch (e) {
+    if (contentEl) contentEl.innerHTML = '<span style="color:#c0392b">Send to Colossus failed: connection error.</span>';
+  }
+}
+
+document.getElementById('chatColossusSendBtn').addEventListener('click', sendChatToColossus);
 
 async function openGlobalSettings() {
   settingsReturnView = currentWorkspaceId ? 'workspace' : 'landing';

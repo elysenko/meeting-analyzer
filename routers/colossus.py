@@ -220,3 +220,81 @@ async def workspace_colossus_send(request: Request, workspace_id: int, body: dic
     except ColossusError as exc:
         raise _map_colossus_error(exc)
     return result
+
+
+@router.post("/workspaces/{workspace_id}/chat/sessions/{session_id}/colossus-send")
+async def workspace_chat_colossus_send(request: Request, workspace_id: int, session_id: int):
+    """Distill this chat discussion and send it to the linked Colossus project.
+
+    Mirrors the chat->document per-session action (routers/chat.py) but non-streaming:
+    load the transcript, distill {title, content} with the workspace's own LLM — phrased
+    for the linked project's LIVE currentStep (spec -> specification, else implementation
+    plan) — then forward through the existing idempotent /colossus-send pipe.
+    Idempotency-Key = sha256(ws:sid:message_count): retrying the same discussion state
+    replays the original send instead of duplicating it.
+    """
+    import hashlib
+    from main_live import (
+        app, _ensure_user_workspace, _get_workspace_chat_session,
+        _list_chat_session_messages, _get_workspace_llm_preferences, _resolve_task_llm,
+    )
+    from llm import _call_llm_runner_json
+    await _ensure_user_workspace(request, workspace_id)
+    token = await _connect_token(request)
+    async with app.state.db_pool.acquire() as conn:
+        ws = await conn.fetchrow(
+            "SELECT name, colossus_deployment_id, colossus_project_name FROM workspaces WHERE id = $1",
+            workspace_id,
+        )
+    dep = ws["colossus_deployment_id"] if ws else None
+    if not dep:
+        raise HTTPException(status_code=400, detail="Workspace is not linked to a Colossus project — link one in Settings first")
+    session = await _get_workspace_chat_session(workspace_id, session_id)
+    messages = await _list_chat_session_messages(workspace_id, session_id)
+    turns = [m for m in messages if (m.get("content") or "").strip()]
+    if not turns:
+        raise HTTPException(status_code=400, detail="This discussion has no messages to send yet")
+
+    try:
+        live = await colossus_svc.link_status(token, dep)
+    except ColossusError as exc:
+        raise _map_colossus_error(exc)
+    current_step = ((live.get("project") or {}).get("currentStep")) or "spec"
+    artifact = "product specification" if current_step == "spec" else "implementation plan"
+
+    transcript = "\n".join(f"{m.get('role','user')}: {m.get('content','')}" for m in turns)[-24000:]
+    prompt = f"""You are distilling a meeting/workspace discussion into a {artifact} for the software project "{ws['colossus_project_name'] or 'linked project'}".
+
+Discussion transcript (oldest first):
+{transcript}
+
+Return ONLY valid JSON with:
+- "title": a short, specific title for this {artifact} (<= 12 words)
+- "content": the distilled {artifact} in markdown — concrete requirements/decisions/steps from the discussion only; no invented details; keep open questions in a final "Open questions" section.
+"""
+    preferences = await _get_workspace_llm_preferences(workspace_id)
+    provider, model = _resolve_task_llm(preferences, "chat")
+    try:
+        payload, _meta = await _call_llm_runner_json(
+            [{"role": "user", "content": prompt}],
+            provider=provider, model=model, use_case="chat",
+            max_tokens=2400, timeout=300.0,
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Distillation failed: {exc}")
+    payload = payload if isinstance(payload, dict) else {}
+    title = ((payload.get("title") or session.get("title") or "Meeting discussion")).strip()[:200]
+    content = (payload.get("content") or "").strip()
+    if not content:
+        raise HTTPException(status_code=502, detail="Distillation produced no content — try again")
+
+    key = hashlib.sha256(f"{workspace_id}:{session_id}:{len(messages)}".encode()).hexdigest()
+    try:
+        result = await colossus_svc.send_with_key(token, dep, current_step, title, content, key)
+    except ColossusError as exc:
+        raise _map_colossus_error(exc)
+    logger.info("Colossus chat-send ws=%s session=%s -> %s (%s, replay=%s)",
+                workspace_id, session_id, dep, result.get("routed_to"), result.get("replay"))
+    out = dict(result)
+    out["title"] = title
+    return out
