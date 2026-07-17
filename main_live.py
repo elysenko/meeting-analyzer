@@ -3272,6 +3272,24 @@ async def list_llm_models():
         return _fallback_llm_models()
 
 
+# ---- Claude token pool proxy routes ----
+
+@app.get("/llm/tokens")
+async def list_claude_tokens():
+    return await app.state.llm_runner_service.get_json("/v1/claude-tokens", timeout=10.0)
+
+
+@app.post("/llm/tokens")
+async def add_claude_token(request: Request):
+    body = await request.json()
+    return await app.state.llm_runner_service.post_json("/v1/claude-tokens", body, timeout=10.0)
+
+
+@app.delete("/llm/tokens/{index}")
+async def remove_claude_token(index: int):
+    return await app.state.llm_runner_service.delete_json(f"/v1/claude-tokens/{index}", timeout=10.0)
+
+
 @app.get("/settings/llm-defaults")
 async def get_global_llm_defaults():
     return await _get_global_llm_defaults()

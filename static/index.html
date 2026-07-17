@@ -3423,6 +3423,7 @@
     <div class="settings-layout">
       <div class="settings-sidebar">
         <button class="settings-nav-btn active" data-settings-panel="globalModelsPanel">Global Models</button>
+        <button class="settings-nav-btn" data-settings-panel="tokenPoolPanel">Claude Tokens</button>
       </div>
       <div>
         <div class="settings-panel active" id="globalModelsPanel">
@@ -3436,6 +3437,24 @@
               <button id="applyGlobalToAllBtn" class="new-ws-cancel">Reset All Workspaces</button>
             </div>
             <div id="globalSettingsMeta" class="small-meta" style="margin-top:0.85rem"></div>
+          </div>
+        </div>
+        <div class="settings-panel" id="tokenPoolPanel">
+          <div class="status-strip">Add multiple Claude OAuth tokens. When one hits its usage limit the runner automatically rotates to the next available token.</div>
+          <div class="context-card">
+            <div class="label">Token Pool <span class="label-line"></span></div>
+            <div id="tokenPoolList" style="margin-top:0.75rem;min-height:2rem"><span class="small-note">Loading…</span></div>
+            <div style="margin-top:1.1rem">
+              <div class="label" style="font-size:0.8rem;margin-bottom:0.4rem">Add Token</div>
+              <div style="display:flex;gap:0.5rem;flex-wrap:wrap">
+                <input id="tokenPoolInput" type="password" placeholder="sk-ant-oat01-…" autocomplete="off"
+                  style="flex:1;min-width:220px;padding:0.42rem 0.6rem;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text);font-size:0.85rem">
+                <input id="tokenPoolLabel" type="text" placeholder="Label (optional)"
+                  style="width:140px;padding:0.42rem 0.6rem;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text);font-size:0.85rem">
+                <button id="tokenPoolAddBtn" class="accent-btn" style="white-space:nowrap">Add Token</button>
+              </div>
+              <div id="tokenPoolStatus" class="small-meta" style="margin-top:0.5rem"></div>
+            </div>
           </div>
         </div>
       </div>
@@ -7871,7 +7890,66 @@ document.querySelectorAll('#globalSettingsView [data-settings-panel]').forEach(f
     document.querySelectorAll('#globalSettingsView .settings-panel').forEach(function(panel) { panel.classList.remove('active'); });
     btn.classList.add('active');
     document.getElementById(btn.dataset.settingsPanel).classList.add('active');
+    if (btn.dataset.settingsPanel === 'tokenPoolPanel') loadTokenPool();
   });
+});
+
+/* --- Token Pool --- */
+function _maskToken(t) {
+  if (!t || t.length < 12) return '…';
+  return t.slice(0, 16) + '…' + t.slice(-4);
+}
+
+function loadTokenPool() {
+  var list = document.getElementById('tokenPoolList');
+  list.innerHTML = '<span class="small-note">Loading…</span>';
+  fetch('/llm/tokens').then(function(r) { return r.json(); }).then(function(data) {
+    var tokens = (data && data.tokens) || [];
+    if (!tokens.length) {
+      list.innerHTML = '<span class="small-note" style="color:var(--text-dim)">No tokens in pool — add one below.</span>';
+      return;
+    }
+    list.innerHTML = tokens.map(function(t, i) {
+      var activeTag = t.active ? '<span style="color:#4caf50;font-weight:600;margin-left:0.4rem">● active</span>' : '';
+      var exhaustedTag = t.exhausted ? '<span style="color:#f44336;margin-left:0.4rem">⚠ exhausted</span>' : '';
+      var labelText = t.label ? '<strong>' + esc(t.label) + '</strong> — ' : '';
+      return '<div style="display:flex;align-items:center;gap:0.6rem;padding:0.45rem 0;border-bottom:1px solid var(--border)">'
+        + '<span class="small-note" style="flex:1;word-break:break-all">' + labelText + (t.token_preview || _maskToken(t.preview || '')) + activeTag + exhaustedTag + '</span>'
+        + '<button class="del-ws-btn" style="padding:0.2rem 0.5rem;font-size:0.78rem" onclick="removeTokenFromPool(' + i + ')">Remove</button>'
+        + '</div>';
+    }).join('');
+  }).catch(function(e) {
+    list.innerHTML = '<span class="small-note" style="color:#f44">Failed to load tokens: ' + esc(String(e)) + '</span>';
+  });
+}
+
+function removeTokenFromPool(index) {
+  if (!confirm('Remove token ' + index + ' from the pool?')) return;
+  fetch('/llm/tokens/' + index, { method: 'DELETE' }).then(function(r) {
+    if (!r.ok) return r.json().then(function(d) { alert((d && d.detail) || 'Remove failed'); });
+    loadTokenPool();
+  }).catch(function() { alert('Network error'); });
+}
+
+document.getElementById('tokenPoolAddBtn').addEventListener('click', function() {
+  var token = document.getElementById('tokenPoolInput').value.trim();
+  var label = document.getElementById('tokenPoolLabel').value.trim();
+  var status = document.getElementById('tokenPoolStatus');
+  if (!token) { status.textContent = 'Paste a token first.'; return; }
+  if (!token.startsWith('sk-ant-')) { status.textContent = 'Token must start with sk-ant-'; return; }
+  status.textContent = 'Adding…';
+  fetch('/llm/tokens', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ accessToken: token, label: label })
+  }).then(function(r) { return r.json().then(function(d) { return { ok: r.ok, d: d }; }); })
+  .then(function(res) {
+    if (!res.ok) { status.textContent = 'Error: ' + ((res.d && res.d.detail) || 'unknown'); return; }
+    document.getElementById('tokenPoolInput').value = '';
+    document.getElementById('tokenPoolLabel').value = '';
+    status.textContent = 'Token added (' + (res.d.count || '?') + ' in pool).';
+    loadTokenPool();
+  }).catch(function() { status.textContent = 'Network error'; });
 });
 
 /* --- Workspace Tabs --- */

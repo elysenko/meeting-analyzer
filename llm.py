@@ -120,6 +120,26 @@ class _LLMRunnerService:
             raise last_error
         raise HTTPException(status_code=502, detail=f"llm-runner request failed: {last_error}")
 
+    async def delete_json(self, path: str, *, timeout: float = 30.0) -> Any:
+        last_error: Exception | None = None
+        for attempt in range(3):
+            try:
+                async with httpx.AsyncClient(timeout=timeout) as client:
+                    resp = await client.delete(self._url(path))
+                if resp.status_code == 200:
+                    return resp.json()
+                if resp.status_code < 500 or attempt >= 2:
+                    raise HTTPException(status_code=resp.status_code, detail=self._response_detail(resp))
+                last_error = HTTPException(status_code=resp.status_code, detail=self._response_detail(resp))
+            except httpx.RequestError as exc:
+                last_error = exc
+                if attempt >= 2:
+                    break
+            await asyncio.sleep(0.2 * (attempt + 1))
+        if isinstance(last_error, HTTPException):
+            raise last_error
+        raise HTTPException(status_code=502, detail=f"llm-runner request failed: {last_error}")
+
     async def post_json(self, path: str, payload: dict[str, Any], *, timeout: float = 3600.0) -> Any:
         last_error: Exception | None = None
         max_attempts = 3
