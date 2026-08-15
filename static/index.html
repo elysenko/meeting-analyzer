@@ -4005,13 +4005,18 @@ async function parseJSONError(resp, fallbackMessage) {
 }
 
 function parseSSEJsonBlock(block) {
-  const lines = String(block || '').split(/\\r?\\n/);
+  const lines = String(block || '').split(/\r?\n/);
   const dataLines = [];
   lines.forEach(function(line) {
     if (line.startsWith('data:')) dataLines.push(line.slice(5).trimStart());
   });
   if (!dataLines.length) return null;
-  return JSON.parse(dataLines.join('\\n'));
+  try {
+    return JSON.parse(dataLines.join('\n'));
+  } catch (e) {
+    console.warn('Skipping malformed SSE block:', e);
+    return null;
+  }
 }
 
 const llmRunnerApi = {
@@ -4067,7 +4072,7 @@ const llmRunnerApi = {
       const chunk = await reader.read();
       if (chunk.done) break;
       buffer += decoder.decode(chunk.value, { stream: true });
-      const blocks = buffer.split(/\\r?\\n\\r?\\n/);
+      const blocks = buffer.split(/\r?\n\r?\n/);
       buffer = blocks.pop();
       for (let i = 0; i < blocks.length; i++) {
         const block = blocks[i].trim();
