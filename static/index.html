@@ -2940,6 +2940,23 @@
         <div class="queue-list" id="recUploadQueueList"></div>
         <input type="file" id="recFileInput" multiple accept=".mp4,.m4a,.mp3,video/mp4,audio/mp4,audio/x-m4a,audio/mpeg">
       </div>
+      <div style="text-align:center;margin:-0.25rem 0 0.75rem">
+        <button type="button" class="btn-flat" id="pasteTranscriptToggleBtn" style="font-size:0.8rem;color:var(--text-dim)">Or paste/upload a transcript instead</button>
+      </div>
+      <div class="context-card" id="pasteTranscriptCard" style="display:none;margin-bottom:0.85rem">
+        <div class="label">Add Transcript <span class="label-line"></span></div>
+        <div class="small-note" style="margin-top:0.4rem">Paste an existing transcript, or upload a .txt/.md file. Skips audio extraction and transcription — analysis runs immediately on the text.</div>
+        <textarea id="pasteTranscriptText" class="plain-textarea" style="min-height:160px;margin-top:0.6rem" placeholder="Paste meeting transcript here..."></textarea>
+        <div style="display:flex;align-items:center;gap:0.6rem;margin-top:0.6rem;flex-wrap:wrap">
+          <button type="button" class="plain-btn" id="pasteTranscriptFileBtn">Choose .txt file&hellip;</button>
+          <input type="file" id="pasteTranscriptFileInput" accept=".txt,.md" style="display:none">
+          <span id="pasteTranscriptFileName" class="small-note"></span>
+          <span style="flex:1"></span>
+          <button type="button" class="new-ws-cancel" id="pasteTranscriptCancelBtn">Cancel</button>
+          <button type="button" class="accent-btn" id="pasteTranscriptSubmitBtn">Analyze Transcript</button>
+        </div>
+        <div id="pasteTranscriptStatus" class="small-note" style="margin-top:0.6rem"></div>
+      </div>
       <div style="display:flex;align-items:center;gap:0.5rem;margin-bottom:0.5rem">
         <span style="flex:1"></span>
         <button class="merge-toggle-btn" id="wsMergeBtn">Merge</button>
@@ -11455,6 +11472,68 @@ recFileInput.addEventListener('change', function() {
   recFileInput.value = '';
 });
 
+/* --- Paste/upload transcript (bypasses audio transcription) --- */
+const pasteTranscriptCard = document.getElementById('pasteTranscriptCard');
+const pasteTranscriptText = document.getElementById('pasteTranscriptText');
+const pasteTranscriptStatus = document.getElementById('pasteTranscriptStatus');
+const pasteTranscriptSubmitBtn = document.getElementById('pasteTranscriptSubmitBtn');
+const pasteTranscriptFileInput = document.getElementById('pasteTranscriptFileInput');
+
+document.getElementById('pasteTranscriptToggleBtn').addEventListener('click', function() {
+  const opening = pasteTranscriptCard.style.display === 'none';
+  pasteTranscriptCard.style.display = opening ? '' : 'none';
+  if (opening) pasteTranscriptText.focus();
+});
+
+document.getElementById('pasteTranscriptCancelBtn').addEventListener('click', function() {
+  pasteTranscriptCard.style.display = 'none';
+  pasteTranscriptText.value = '';
+  pasteTranscriptStatus.textContent = '';
+  document.getElementById('pasteTranscriptFileName').textContent = '';
+});
+
+document.getElementById('pasteTranscriptFileBtn').addEventListener('click', function() {
+  pasteTranscriptFileInput.click();
+});
+
+pasteTranscriptFileInput.addEventListener('change', function() {
+  const file = pasteTranscriptFileInput.files[0];
+  pasteTranscriptFileInput.value = '';
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = function() {
+    pasteTranscriptText.value = String(reader.result || '');
+    document.getElementById('pasteTranscriptFileName').textContent = file.name;
+  };
+  reader.onerror = function() {
+    pasteTranscriptStatus.textContent = 'Could not read that file.';
+  };
+  reader.readAsText(file);
+});
+
+pasteTranscriptSubmitBtn.addEventListener('click', async function() {
+  const text = pasteTranscriptText.value.trim();
+  if (!text) { pasteTranscriptStatus.textContent = 'Paste or upload a transcript first.'; return; }
+  if (!currentWorkspaceId) { pasteTranscriptStatus.textContent = 'Open a workspace first.'; return; }
+  pasteTranscriptSubmitBtn.disabled = true;
+  pasteTranscriptSubmitBtn.textContent = 'Analyzing...';
+  pasteTranscriptStatus.textContent = 'Analyzing transcript...';
+  try {
+    const finalResult = await runAnalyzeText(text, currentWorkspaceId);
+    pasteTranscriptCard.style.display = 'none';
+    pasteTranscriptText.value = '';
+    document.getElementById('pasteTranscriptFileName').textContent = '';
+    pasteTranscriptStatus.textContent = '';
+    await loadWsMeetings();
+    if (finalResult.id) showMeeting(finalResult.id);
+  } catch (err) {
+    pasteTranscriptStatus.textContent = 'Error: ' + err.message;
+  } finally {
+    pasteTranscriptSubmitBtn.disabled = false;
+    pasteTranscriptSubmitBtn.textContent = 'Analyze Transcript';
+  }
+});
+
 function isSupportedRecordingFile(file) {
   const ext = (file && file.name ? file.name : '').toLowerCase();
   return ext.endsWith('.mp4') || ext.endsWith('.m4a') || ext.endsWith('.mp3');
@@ -14388,6 +14467,48 @@ function showLiveError(msg) {
   updateLiveActivity({ mode: 'error', status: 'Live transcription error.', error: msg, completedAt: Date.now() });
 }
 
+/* Shared by the live-transcription "Save and Analyze" flow and the manual
+   "paste/upload transcript" flow in the Meetings tab — both post raw text to
+   /analyze-text, which analyzes it and saves it as a meeting, streaming
+   progress back as newline-delimited JSON. */
+async function runAnalyzeText(text, workspaceId) {
+  const resp = await fetch('/analyze-text', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ text: text, workspace_id: workspaceId })
+  });
+  if (!resp.ok) {
+    throw new Error(await parseJSONError(resp));
+  }
+
+  const reader = resp.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  let finalResult = null;
+
+  while (true) {
+    const chunk = await reader.read();
+    if (chunk.done) break;
+    buffer += decoder.decode(chunk.value, { stream: true });
+    const lines = buffer.split('\n');
+    buffer = lines.pop();
+    for (let i = 0; i < lines.length; i++) {
+      if (!lines[i].trim()) continue;
+      const msg = JSON.parse(lines[i]);
+      if (msg.result) finalResult = msg.result;
+      if (msg.error) throw new Error(msg.error);
+    }
+  }
+  if (buffer.trim()) {
+    const msg = JSON.parse(buffer);
+    if (msg.result) finalResult = msg.result;
+    if (msg.error) throw new Error(msg.error);
+  }
+
+  if (!finalResult) throw new Error('No result received');
+  return finalResult;
+}
+
 analyzeTranscriptBtn.addEventListener('click', async function() {
   if (!liveFinalText) return;
   analyzeTranscriptBtn.disabled = true;
@@ -14400,40 +14521,7 @@ analyzeTranscriptBtn.addEventListener('click', async function() {
   const analysisWorkspaceId = liveSessionOriginWorkspaceId() || currentWorkspaceId;
 
   try {
-    const resp = await fetch('/analyze-text', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ text: liveFinalText, workspace_id: analysisWorkspaceId })
-    });
-    if (!resp.ok) {
-      throw new Error(await parseJSONError(resp));
-    }
-
-    const reader = resp.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = '';
-    let finalResult = null;
-
-    while (true) {
-      const chunk = await reader.read();
-      if (chunk.done) break;
-      buffer += decoder.decode(chunk.value, { stream: true });
-      const lines = buffer.split('\n');
-      buffer = lines.pop();
-      for (let i = 0; i < lines.length; i++) {
-        if (!lines[i].trim()) continue;
-        const msg = JSON.parse(lines[i]);
-        if (msg.result) finalResult = msg.result;
-        if (msg.error) throw new Error(msg.error);
-      }
-    }
-    if (buffer.trim()) {
-      const msg = JSON.parse(buffer);
-      if (msg.result) finalResult = msg.result;
-      if (msg.error) throw new Error(msg.error);
-    }
-
-    if (!finalResult) throw new Error('No result received');
+    const finalResult = await runAnalyzeText(liveFinalText, analysisWorkspaceId);
 
     livePipelineEl.classList.remove('active');
     if (step) { step.classList.remove('current'); step.classList.add('done'); }
