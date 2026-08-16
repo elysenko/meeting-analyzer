@@ -1522,18 +1522,10 @@ Respond with ONLY valid JSON, no markdown fences.
 {transcript}
 </transcript>"""
 
-CHAT_SYSTEM_PROMPT = (
-    "You are a helpful, friendly meeting analyst. You may receive meetings, documents, and "
-    "research sessions in XML format as workspace context. Use this context to "
-    "ground your answers with specific details when relevant. You also have full "
-    "access to the conversation history -- when the user references prior messages "
-    "or asks you to revise, rewrite, or regenerate something, look back through "
-    "the conversation to find it. Format responses in readable Markdown and prefer "
-    "fenced code blocks for code or CSS. "
-    "Keep responses concise and to the point. "
-    "Never use em-dashes (-- or \u2014) in your responses; use commas, periods, or reword instead. "
-    "Maintain a warm, polite tone throughout."
-)
+# Single source of truth lives in services/chat_svc.py, which is what the live
+# chat router uses. This module previously carried a byte-identical copy, so a
+# prompt fix applied to one path silently missed the other.
+from services.chat_svc import CHAT_SYSTEM_PROMPT  # noqa: E402
 
 import pathlib as _pathlib
 HTML_PAGE = (_pathlib.Path(__file__).parent / "static" / "index.html").read_text()

@@ -15,6 +15,7 @@ from typing import Any
 from fastapi import HTTPException
 
 from config import (
+    APP_PATH_PREFIX,
     CHAT_SESSION_TITLE_LIMIT,
     DEFAULT_CHAT_SESSION_TITLE,
 )
@@ -37,6 +38,16 @@ CHAT_SYSTEM_PROMPT = (
     "Keep responses concise and to the point. "
     "Never use em-dashes (-- or —) in your responses; use commas, periods, or reword instead. "
     "Maintain a warm, polite tone throughout."
+    "\n\n"
+    # Without this contract the model answers "give me the link again" by scavenging
+    # the conversation for anything link-shaped, including absolute URLs to hosts that
+    # are long gone. Those resolve to a dead port and fail TLS in the browser, so the
+    # only safe source of a download link is the <available_documents> block below.
+    "DOCUMENT LINKS: The only valid download link is the exact path given in the "
+    "<available_documents> block, written as a Markdown link. Never write a link that "
+    "includes a scheme or host name, and never reuse a link from earlier in the "
+    "conversation. When the requested file is absent from <available_documents>, say so "
+    "and offer to generate it rather than constructing a URL."
 )
 
 # ---------------------------------------------------------------------------
@@ -698,6 +709,34 @@ def normalize_chat_turn_messages(
 # ---------------------------------------------------------------------------
 
 
+async def build_available_documents_block(pool, workspace_id: int, limit: int = 25) -> str:
+    """Render the workspace's downloadable documents as authoritative link context.
+
+    The chat model is otherwise blind to what the app has stored, so when asked for
+    a download link it falls back to whatever URL-shaped text is in the transcript.
+    Supplying the real filenames and canonical paths makes the correct answer the
+    easiest one to give. Paths carry APP_PATH_PREFIX because the model's output is
+    rendered as a plain anchor, which is not covered by the fetch prefix shim.
+    """
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """SELECT id, filename FROM documents
+               WHERE workspace_id = $1 AND object_key IS NOT NULL
+               ORDER BY uploaded_at DESC LIMIT $2""",
+            workspace_id,
+            limit,
+        )
+    if not rows:
+        return ""
+    lines = [
+        f'<document id="{r["id"]}" filename="{_esc_xml(r["filename"] or "")}" '
+        f'download_path="{APP_PATH_PREFIX}/workspaces/{workspace_id}/documents/{r["id"]}/download" />'
+        for r in rows
+    ]
+    joined = "\n".join(lines)
+    return f"<available_documents>\n{joined}\n</available_documents>"
+
+
 async def prepare_chat_turn_request(
     pool,
     *,
@@ -732,6 +771,18 @@ async def prepare_chat_turn_request(
             )
         else:
             system_prompt = chat_turn_generic_system_prompt()
+
+    # Appended regardless of how the prompt above was built, including the caller
+    # supplied case, so a request for an existing file is always answerable from
+    # real data rather than from whatever link text survives in the transcript.
+    if workspace_id is not None:
+        try:
+            documents_block = await build_available_documents_block(pool, workspace_id)
+        except Exception:
+            logger.exception("failed to build available documents block for workspace %s", workspace_id)
+            documents_block = ""
+        if documents_block:
+            system_prompt = f"{system_prompt or ''}\n\n{documents_block}"
 
     _synthesis_source_count = len(meeting_ids) + len(include_document_ids) + len(include_research_ids)
     _latest_for_intent = next(
