@@ -13366,6 +13366,8 @@ async function sendChat() {
     _docFmt = 'pptx';
   } else if (/\b(word|docx|\.docx)\b/i.test(question)) {
     _docFmt = 'docx';
+  } else if (/\b(excel|xlsx|\.xlsx|spreadsheet|workbook)\b/i.test(question)) {
+    _docFmt = 'xlsx';
   } else if (/\b(create|make|generate|write|build|produce|draft)\b.{0,50}\b(pdf|document|doc|report)\b/i.test(question)
       || /\b(pdf|document|report)\b.{0,30}\b(for me|please)\b/i.test(question)) {
     _docFmt = 'pdf';
@@ -13513,8 +13515,8 @@ async function sendChat() {
 
 async function sendChatDocument(question, format) {
   var fmt = (format || 'pdf').toLowerCase();
-  var fmtLabel = fmt === 'pptx' ? 'Presentation' : fmt === 'docx' ? 'Word document' : 'PDF';
-  var fmtIcon  = fmt === 'pptx' ? '\uD83D\uDCCA' : fmt === 'docx' ? '\uD83D\uDCDD' : '\uD83D\uDCC4';
+  var fmtLabel = fmt === 'pptx' ? 'Presentation' : fmt === 'docx' ? 'Word document' : fmt === 'xlsx' ? 'Excel workbook' : 'PDF';
+  var fmtIcon  = fmt === 'pptx' ? '\uD83D\uDCCA' : fmt === 'docx' ? '\uD83D\uDCDD' : fmt === 'xlsx' ? '\uD83D\uDCD2' : '\uD83D\uDCC4';
   if (!currentWorkspaceId) return;
   if (chatRequestActive()) return;
   if (!currentChatSessionId) await createChatSession({ quiet: true, skipFocus: true });
@@ -13567,8 +13569,8 @@ async function sendChatDocument(question, format) {
           contentEl.innerHTML = '<em>' + (event.content || '') + '</em>';
         } else if (event.type === 'done') {
           var evFmt = (event.format || fmt);
-          var evIcon = evFmt === 'pptx' ? '\uD83D\uDCCA' : evFmt === 'docx' ? '\uD83D\uDCDD' : '\uD83D\uDCC4';
-          var evLabel = evFmt === 'pptx' ? 'Download Presentation' : evFmt === 'docx' ? 'Download Word Doc' : 'Download PDF';
+          var evIcon = evFmt === 'pptx' ? '\uD83D\uDCCA' : evFmt === 'docx' ? '\uD83D\uDCDD' : evFmt === 'xlsx' ? '\uD83D\uDCD2' : '\uD83D\uDCC4';
+          var evLabel = evFmt === 'pptx' ? 'Download Presentation' : evFmt === 'docx' ? 'Download Word Doc' : evFmt === 'xlsx' ? 'Download Excel Workbook' : 'Download PDF';
           statusEl.classList.remove('streaming');
           contentEl.innerHTML =
             '<div class="chat-doc-card">'

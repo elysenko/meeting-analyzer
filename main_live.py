@@ -1209,6 +1209,70 @@ def _build_docx_bytes(
     return output.getvalue()
 
 
+def _build_xlsx_bytes(
+    title: str,
+    sheets: list[dict[str, Any]],
+    branding: dict[str, Any] | None = None,
+    logo_bytes: bytes | None = None,
+) -> bytes:
+    from openpyxl import Workbook
+    from openpyxl.styles import Alignment, Font, PatternFill
+    from openpyxl.utils import get_column_letter
+
+    branding = branding or {}
+    primary_hex = "".join(f"{c:02X}" for c in _hex_to_rgb(branding.get("primary_color")))
+    header_font = Font(bold=True, color="FFFFFF")
+    header_fill = PatternFill(start_color=primary_hex, end_color=primary_hex, fill_type="solid")
+
+    wb = Workbook()
+    wb.remove(wb.active)
+    for sheet_data in (sheets or [])[:20]:
+        if not isinstance(sheet_data, dict):
+            continue
+        name = _slugify(str(sheet_data.get("name") or title or "Sheet"), 31).replace("-", " ").title() or "Sheet"
+        # openpyxl sheet names must be unique and <=31 chars
+        base_name, suffix, idx = name[:31], "", 2
+        while base_name in wb.sheetnames:
+            suffix = f" ({idx})"
+            base_name = f"{name[:31 - len(suffix)]}{suffix}"
+            idx += 1
+        ws = wb.create_sheet(title=base_name)
+
+        headers = [str(h) for h in (sheet_data.get("headers") or [])]
+        if headers:
+            for col_idx, header in enumerate(headers, start=1):
+                cell = ws.cell(row=1, column=col_idx, value=header)
+                cell.font = header_font
+                cell.fill = header_fill
+                cell.alignment = Alignment(horizontal="center")
+
+        rows = sheet_data.get("rows") or []
+        for row_idx, row in enumerate(rows, start=2 if headers else 1):
+            if not isinstance(row, (list, tuple)):
+                continue
+            for col_idx, value in enumerate(row, start=1):
+                ws.cell(row=row_idx, column=col_idx, value=value)
+
+        col_count = max([len(headers)] + [len(r) for r in rows if isinstance(r, (list, tuple))] or [1])
+        for col_idx in range(1, col_count + 1):
+            ws.column_dimensions[get_column_letter(col_idx)].width = 16
+        if headers:
+            ws.freeze_panes = "A2"
+
+    if not wb.sheetnames:
+        wb.create_sheet(title="Sheet1")
+
+    # Note: unlike _build_docx_bytes/_build_pptx_bytes, no logo embedding here —
+    # a fixed-position image would overlap header cells since sheet layout is
+    # data-driven. branding/logo_bytes are accepted for interface parity with
+    # the other builders but intentionally unused.
+    _ = logo_bytes
+
+    output = io.BytesIO()
+    wb.save(output)
+    return output.getvalue()
+
+
 def _add_markdown_runs(paragraph, text: str, _re) -> None:
     """Add runs to a docx paragraph, converting **bold** and *italic* markers."""
     from docx.shared import Pt
@@ -11729,6 +11793,42 @@ async def _generate_structured_document(
             filename,
             "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
             docx_bytes,
+            extracted_text,
+        )
+        return {
+            "type": output_type,
+            "document": document,
+            "preview": extracted_text,
+            "download_url": f'/workspaces/{workspace_id}/documents/{document["id"]}/download',
+            "llm_provider": meta.get("provider"),
+            "llm_model": meta.get("model"),
+        }
+
+    if output_type == "xlsx":
+        payload, meta = await _call_llm_runner_json(
+            [{"role": "user", "content": generation_prompt}],
+            provider=provider,
+            model=model,
+            use_case="chat",
+            max_tokens=8000,
+        )
+        payload = _json_dict(payload)
+        title = payload.get("title") or safe_title
+        sheets = payload.get("sheets") or []
+        xlsx_bytes = await asyncio.to_thread(_build_xlsx_bytes, title, sheets, branding, logo_bytes)
+        extracted_text = "\n\n".join(
+            [title] + [
+                f'{sheet.get("name") or ""}\n' + ", ".join(str(h) for h in (sheet.get("headers") or []))
+                for sheet in sheets
+                if isinstance(sheet, dict)
+            ]
+        ).strip()
+        filename = f'{_slugify(title, 70) or "generated-workbook"}.xlsx'
+        document = await _store_generated_document(
+            workspace_id,
+            filename,
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            xlsx_bytes,
             extracted_text,
         )
         return {

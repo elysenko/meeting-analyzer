@@ -410,10 +410,10 @@ async def chat_generate_document(
     body: ChatTurnProxyRequest,
     format: str = "pdf",
 ):
-    """Generate a document (pdf/docx/pptx) from a chat prompt and stream progress events."""
+    """Generate a document (pdf/docx/pptx/xlsx) from a chat prompt and stream progress events."""
     from main_live import _generate_structured_document
     fmt = format.strip().lower()
-    if fmt not in ("pdf", "docx", "pptx"):
+    if fmt not in ("pdf", "docx", "pptx", "xlsx"):
         fmt = "pdf"
     await _ensure_user_workspace(request, workspace_id)
 
@@ -497,6 +497,24 @@ async def chat_generate_document(
                     '  - "title": string — slide title\n'
                     '  - "bullets": array of strings — slide bullet points\n\n'
                     "Produce a complete presentation with a title slide and 6-10 content slides."
+                )
+            elif fmt == "xlsx":
+                generation_prompt = (
+                    "You are generating an Excel workbook (spreadsheet model) based on the"
+                    " user's request and any available workspace context.\n\n"
+                    + history_section
+                    + f"User request: {user_text}\n\n"
+                    + context_section
+                    + "Return ONLY valid JSON with:\n"
+                    '- "title": string — concise workbook title\n'
+                    '- "sheets": array of objects, each with:\n'
+                    '  - "name": string — sheet tab name (max 31 characters)\n'
+                    '  - "headers": array of strings — column headers for row 1\n'
+                    '  - "rows": array of arrays — each inner array is one data row,'
+                    ' with values aligned to "headers" (numbers as JSON numbers, not strings,'
+                    ' so formulas and totals can be built on them)\n\n'
+                    "Produce a complete, usable model: include every sheet, formula-ready"
+                    " numeric data, and realistic figures the user can immediately work with."
                 )
             else:
                 generation_prompt = (
