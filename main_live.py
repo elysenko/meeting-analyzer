@@ -11815,6 +11815,19 @@ async def _generate_structured_document(
         payload = _json_dict(payload)
         title = payload.get("title") or safe_title
         sheets = payload.get("sheets") or []
+        # The model sometimes returns a well-formed envelope carrying no tabular
+        # data. _build_xlsx_bytes would then fall back to a single blank sheet and
+        # we'd store a downloadable but unusable empty workbook. Surfacing an error
+        # is more useful than a silent blank file; the caller in routers/chat.py
+        # turns any exception here into an SSE {"type": "error"} event.
+        if not any(
+            isinstance(sheet, dict) and (sheet.get("headers") or sheet.get("rows"))
+            for sheet in sheets
+        ):
+            raise ValueError(
+                "The model returned no usable spreadsheet data. Try again, or "
+                "rephrase with the specific rows and columns you want."
+            )
         xlsx_bytes = await asyncio.to_thread(_build_xlsx_bytes, title, sheets, branding, logo_bytes)
         extracted_text = "\n\n".join(
             [title] + [
