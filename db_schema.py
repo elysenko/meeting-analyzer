@@ -694,9 +694,35 @@ async def init_db(database_url: str) -> asyncpg.Pool:
         # Add Canvas token columns to user_tokens
         await conn.execute("ALTER TABLE user_tokens ADD COLUMN IF NOT EXISTS canvas_access_token TEXT")
         await conn.execute("ALTER TABLE user_tokens ADD COLUMN IF NOT EXISTS canvas_instance_url TEXT")
+        # Colossus integration: account connect token + 1:1 workspace->project link
+        await conn.execute("ALTER TABLE user_tokens ADD COLUMN IF NOT EXISTS colossus_connect_token TEXT")
+        await conn.execute("ALTER TABLE workspaces ADD COLUMN IF NOT EXISTS colossus_deployment_id TEXT")
+        await conn.execute("ALTER TABLE workspaces ADD COLUMN IF NOT EXISTS colossus_project_name TEXT")
+        await conn.execute("ALTER TABLE workspaces ADD COLUMN IF NOT EXISTS colossus_linked_at TIMESTAMPTZ")
+        await conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_workspaces_colossus_dep_unique ON workspaces (colossus_deployment_id) WHERE colossus_deployment_id IS NOT NULL")
         # Add Google token columns to user_tokens
         await conn.execute("ALTER TABLE user_tokens ADD COLUMN IF NOT EXISTS google_access_token TEXT")
         await conn.execute("ALTER TABLE user_tokens ADD COLUMN IF NOT EXISTS google_refresh_token TEXT")
+        # Google Calendar incremental sync token
+        await conn.execute("ALTER TABLE user_tokens ADD COLUMN IF NOT EXISTS google_cal_sync_token TEXT")
+        # iCal URL subscriptions (Apple / Google / Outlook / other)
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS calendar_ical_subscriptions (
+                id           SERIAL PRIMARY KEY,
+                user_id      TEXT NOT NULL,
+                label        TEXT NOT NULL,
+                provider     TEXT NOT NULL DEFAULT 'other',
+                url          TEXT NOT NULL,
+                workspace_id INTEGER REFERENCES workspaces(id) ON DELETE SET NULL,
+                sync_enabled BOOLEAN NOT NULL DEFAULT TRUE,
+                last_synced_at TIMESTAMPTZ,
+                error_last   TEXT,
+                created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+        """)
+        await conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_cal_ical_subs_user ON calendar_ical_subscriptions(user_id)"
+        )
         # ---- Live Q&A tables ----
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS live_qa_sessions (

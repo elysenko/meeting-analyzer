@@ -30,3 +30,4 @@ pdfplumber>=0.11,<1
 fastembed>=0.5,<1
 pikepdf>=8,<10
 duckduckgo-search>=6,<8
+icalendar>=5.0,<6
