@@ -15584,7 +15584,11 @@ async function loadDocuments() {
 async function downloadDoc(docId) {
   if (!currentWorkspaceId) return;
   const a = document.createElement('a');
-  a.href = '/workspaces/' + currentWorkspaceId + '/documents/' + docId + '/download';
+  // Anchor navigation bypasses the window.fetch monkey-patch that injects the
+  // deployment path prefix, so __BASE has to be applied explicitly here or the
+  // browser requests /workspaces/... and the ingress 404s on the unprefixed path.
+  a.href = (typeof __BASE !== 'undefined' ? __BASE : '')
+    + '/workspaces/' + currentWorkspaceId + '/documents/' + docId + '/download';
   document.body.appendChild(a);
   a.click();
   document.body.removeChild(a);
@@ -16476,7 +16480,8 @@ async function generateFromContext() {
         if (msg.result) {
           document.getElementById('generateStatus').textContent = 'Generated ' + msg.result.document.filename;
           document.getElementById('generateResult').textContent = msg.result.preview || '';
-          document.getElementById('generateDownloadLink').href = msg.result.download_url;
+          document.getElementById('generateDownloadLink').href =
+            (typeof __BASE !== 'undefined' ? __BASE : '') + msg.result.download_url;
           document.getElementById('generateActions').style.display = 'flex';
           await loadDocuments();
           await loadDocCtx();

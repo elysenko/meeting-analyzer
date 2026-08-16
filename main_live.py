@@ -12605,13 +12605,23 @@ async def download_document(request: Request, workspace_id: int, doc_id: int):
         )
     if not row:
         raise HTTPException(status_code=404, detail="Document not found")
+    if not row["object_key"]:
+        raise HTTPException(status_code=404, detail="File not stored locally")
 
-    async with _get_minio_client() as client:
-        response = await client.get_object(Bucket=MINIO_BUCKET, Key=row["object_key"])
-        data = await response["Body"].read()
+    # Stream the object through rather than buffering it whole: the previous
+    # read() pulled the entire file into the worker's memory before sending a
+    # byte, so a large export could exhaust a gunicorn worker. Mirrors the
+    # chunked approach already used by the /documents/{id}/raw route.
+    object_key = row["object_key"]
+
+    async def _stream():
+        async with _get_minio_client() as client:
+            response = await client.get_object(Bucket=MINIO_BUCKET, Key=object_key)
+            async for chunk in response["Body"].iter_chunks(chunk_size=65536):
+                yield chunk
 
     return StreamingResponse(
-        iter([data]),
+        _stream(),
         media_type=row["mime_type"],
         headers={"Content-Disposition": _content_disposition("attachment", row["filename"])},
     )
