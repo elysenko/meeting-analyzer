@@ -18,6 +18,7 @@ from config import (
     APP_PATH_PREFIX,
     CHAT_SESSION_TITLE_LIMIT,
     DEFAULT_CHAT_SESSION_TITLE,
+    KEYCLOAK_CALLBACK_URL,
 )
 from services.text_svc import _render_markdown_html, _render_plaintext_html, _json_list, _esc_xml
 
@@ -318,6 +319,72 @@ async def list_chat_session_messages(pool, workspace_id: int, session_id: int) -
     return [serialize_chat_message(row) for row in rows]
 
 
+# ---------------------------------------------------------------------------
+# Assistant link sanitizer (egress firewall)
+# ---------------------------------------------------------------------------
+
+# Host this app is served on externally, taken from the OIDC callback URL,
+# which always points at the public entrypoint.
+_SELF_HOST = re.sub(r"^https?://([^/:]+).*$", r"\1", KEYCLOAK_CALLBACK_URL)
+
+_MD_ABS_LINK_RE = re.compile(r"\[([^\]]*)\]\((https?://[^)\s]+)\)")
+
+
+async def sanitize_assistant_links(pool, workspace_id: int, content: str) -> str:
+    """Rewrite assistant-emitted absolute links that point at our own host.
+
+    The chat model has been observed reproducing stale absolute URLs from
+    conversation history (for example a plain-HTTP artifact server on a bare
+    port) even when the system prompt forbids it. Any such link bypasses the
+    ingress, so it either fails TLS in the browser or 404s. Enforcement
+    therefore happens here, deterministically, at the single point every chat
+    path stores assistant output through.
+
+    A self-host absolute link whose filename matches a workspace document is
+    rewritten to that document's canonical download path. One with no match is
+    degraded to plain text so the user gets an honest miss instead of a dead
+    link. Links to other hosts (research citations and the like) pass through
+    untouched.
+    """
+    matches = list(_MD_ABS_LINK_RE.finditer(content))
+    if not matches:
+        return content
+    out: list[str] = []
+    cursor = 0
+    for m in matches:
+        label, url = m.group(1), m.group(2)
+        host = re.sub(r"^https?://([^/:]+).*$", r"\1", url)
+        if host != _SELF_HOST:
+            continue
+        filename = url.rstrip("/").rsplit("/", 1)[-1]
+        async with pool.acquire() as conn:
+            doc_id = await conn.fetchval(
+                """SELECT id FROM documents
+                   WHERE workspace_id = $1 AND filename = $2 AND object_key IS NOT NULL
+                   ORDER BY id DESC LIMIT 1""",
+                workspace_id,
+                filename,
+            )
+        if doc_id is not None:
+            replacement = (
+                f"[{label}]({APP_PATH_PREFIX}/workspaces/{workspace_id}"
+                f"/documents/{doc_id}/download)"
+            )
+        else:
+            replacement = f"{label} (file is not available for download here)"
+        logger.warning(
+            "sanitized assistant link in workspace %s: %r -> %r",
+            workspace_id, url, replacement,
+        )
+        out.append(content[cursor:m.start()])
+        out.append(replacement)
+        cursor = m.end()
+    if not out:
+        return content
+    out.append(content[cursor:])
+    return "".join(out)
+
+
 async def append_chat_session_message(
     pool,
     workspace_id: int,
@@ -326,6 +393,8 @@ async def append_chat_session_message(
     content: str,
     attachment_ids: list[dict] | None = None,
 ) -> dict[str, Any]:
+    if role == "assistant" and content:
+        content = await sanitize_assistant_links(pool, workspace_id, content)
     async with pool.acquire() as conn:
         async with conn.transaction():
             session_row = await conn.fetchrow(
