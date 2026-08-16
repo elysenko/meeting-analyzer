@@ -15,6 +15,7 @@ from typing import Any
 from fastapi import APIRouter, File, HTTPException, Request, UploadFile
 from starlette.responses import StreamingResponse
 
+from config import APP_PATH_PREFIX
 from models import (
     ChatRenderRequest, ChatRequest, ChatSessionCreateRequest,
     ChatSessionUpdateRequest, ChatTurnProxyRequest,
@@ -550,7 +551,12 @@ async def chat_generate_document(
             download_url = result["download_url"]
             filename = document["filename"]
 
-            assistant_content = f"Here's your document: **{filename}**\n\n[Download]({download_url})"
+            # Persisted messages are rendered as plain anchors (no client-side
+            # __BASE rewrite, which only patches fetch()), so the stored link
+            # must carry the app path prefix or it 404s behind the ingress.
+            # The SSE event's download_url stays prefix-less — the live chat
+            # card prepends __BASE client-side.
+            assistant_content = f"Here's your document: **{filename}**\n\n[Download]({APP_PATH_PREFIX}{download_url})"
             stored_msg = await _chat_svc.append_chat_session_message(
                 pool, workspace_id, session_id, "assistant", assistant_content,
             )
