@@ -12029,109 +12029,13 @@ function handleFile(file) {
   queueRecordingFiles([file]);
 }
 
-async function startNextQueuedUpload() {
-  if (globalUploadState.active || uploadQueue.length === 0) return;
-  const next = uploadQueue.shift();
-  if (!next || !next.file) return;
-  const file = next.file;
-  const uploadWorkspaceId = next.workspaceId;
-  const uploadWorkspaceName = next.workspaceName;
-  globalUploadState = {
-    active: true,
-    fileName: file.name,
-    workspaceId: uploadWorkspaceId,
-    workspaceName: uploadWorkspaceName,
-    step: 'upload',
-    stepStartedAt: Date.now(),
-    status: 'Saving uploaded file...',
-    result: null,
-    error: '',
-    startedAt: Date.now(),
-    completedAt: 0
-  };
-  renderGlobalActivityBar();
-  renderRecUploadSurface();
-
-  const form = new FormData();
-  form.append('file', file);
-  const url = uploadWorkspaceId ? '/analyze-async?workspace_id=' + uploadWorkspaceId : '/analyze-async';
-  uploadAbortController = new AbortController();
-
-  try {
-    const resp = await fetch(url, { method: 'POST', body: form, signal: uploadAbortController.signal });
-    if (!resp.ok) {
-      throw new Error(await parseJSONError(resp, 'Server error ' + resp.status));
-    }
-    const queued = await resp.json();
-    const jobId = queued.job_id;
-
-    /* Persist the job ID so polling can resume if the page is hard-refreshed */
-    writeStoredJSON(PENDING_JOB_KEY, {
-      jobId: jobId,
-      workspaceId: uploadWorkspaceId,
-      workspaceName: uploadWorkspaceName,
-      filename: file.name,
-      at: Date.now()
-    });
-
-    /* Poll /jobs/{id} until done or failed */
-    let finalResult = null;
-    while (true) {
-      await new Promise(function(r) { setTimeout(r, 3000); });
-      if (uploadAbortController && uploadAbortController.signal.aborted) throw new Error('Upload cancelled.');
-      const pollResp = await fetch('/jobs/' + jobId);
-      if (!pollResp.ok) throw new Error('Could not check job status.');
-      const job = await pollResp.json();
-      const label = JOB_STATUS_LABELS[job.status] || job.status;
-      globalUploadState.status = label;
-      renderGlobalActivityBar();
-      if (uploadWorkspaceId === currentWorkspaceId) renderRecUploadSurface();
-      if (job.status === 'failed') throw new Error(job.error || 'Processing failed.');
-      if (job.status === 'done') {
-        finalResult = { id: job.meeting_id };
-        break;
-      }
-    }
-
-    if (!finalResult) throw new Error('No result received');
-    removeStoredJSON(PENDING_JOB_KEY);
-    const hasQueuedItems = uploadQueue.length > 0;
-    globalUploadState.active = false;
-    globalUploadState.result = hasQueuedItems ? null : finalResult;
-    globalUploadState.error = '';
-    globalUploadState.status = hasQueuedItems ? 'Saved meeting. Starting next upload...' : 'Analysis complete.';
-    globalUploadState.completedAt = Date.now();
-    renderGlobalActivityBar();
-    if (uploadWorkspaceId === currentWorkspaceId) renderRecUploadSurface();
-    if (document.getElementById('landingView').style.display !== 'none') loadLanding();
-    if (currentWorkspaceId === uploadWorkspaceId) {
-      await loadWsMeetings();
-      if (!hasQueuedItems && finalResult && finalResult.id) showMeeting(finalResult.id);
-    }
-    if (currentWorkspaceId === uploadWorkspaceId && currentWorkspaceTab === 'wsTodosTab') loadWorkspaceTodos();
-    uploadAbortController = null;
-    if (hasQueuedItems) setTimeout(startNextQueuedUpload, 50);
-  } catch (err) {
-    const aborted = err && (err.name === 'AbortError' || (uploadAbortController && uploadAbortController.signal.aborted));
-    uploadAbortController = null;
-    removeStoredJSON(PENDING_JOB_KEY);
-    if (aborted) {
-      uploadQueue = [];
-      globalUploadState = emptyUploadState();
-      renderGlobalActivityBar();
-      renderRecUploadSurface();
-      return;
-    }
-    globalUploadState.active = false;
-    globalUploadState.result = null;
-    globalUploadState.error = err.message;
-    globalUploadState.status = uploadQueue.length ? 'Error on this file — continuing with next upload...' : '';
-    globalUploadState.completedAt = Date.now();
-    renderGlobalActivityBar();
-    if (uploadWorkspaceId === currentWorkspaceId) renderRecUploadSurface();
-    if (uploadQueue.length > 0) setTimeout(startNextQueuedUpload, 3000);
-  }
-}
+/* startNextQueuedUpload was extracted to _upload_queue.js to keep this inline
+   block smaller. Because nothing in this app serves static/ (there is no
+   StaticFiles mount), it cannot be loaded with <script src>; instead its source
+   is spliced back in at this exact point at startup by main_live.py and
+   routers/core.py, so declaration order and script scope are preserved.
+   See _upload_queue.js. */
+/*__UPLOAD_QUEUE_JS__*/
 
 /* --- Meeting Detail Modal --- */
 function resetDetailActions() {

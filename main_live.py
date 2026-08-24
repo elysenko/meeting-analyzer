@@ -1528,7 +1528,16 @@ Respond with ONLY valid JSON, no markdown fences.
 from services.chat_svc import CHAT_SYSTEM_PROMPT  # noqa: E402
 
 import pathlib as _pathlib
-HTML_PAGE = (_pathlib.Path(__file__).parent / "static" / "index.html").read_text()
+_STATIC_DIR = _pathlib.Path(__file__).parent / "static"
+HTML_PAGE = (_STATIC_DIR / "index.html").read_text()
+# startNextQueuedUpload lives in its own file for readability, but static/ is not
+# served, so it is spliced into the inline <script> at the point it was extracted
+# from. Keeps the delivered page semantically identical to the pre-split version.
+HTML_PAGE = HTML_PAGE.replace(
+    "/*__UPLOAD_QUEUE_JS__*/",
+    (_STATIC_DIR / "_upload_queue.js").read_text(),
+    1,
+)
 
 
 

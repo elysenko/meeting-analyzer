@@ -18,7 +18,16 @@ from middleware import _sign_user_id
 router = APIRouter()
 logger = logging.getLogger("meeting-analyzer")
 
-HTML_PAGE = (pathlib.Path(__file__).parent.parent / "static" / "index.html").read_text()
+_STATIC_DIR = pathlib.Path(__file__).parent.parent / "static"
+HTML_PAGE = (_STATIC_DIR / "index.html").read_text()
+# startNextQueuedUpload lives in its own file for readability, but static/ is not
+# served, so it is spliced into the inline <script> at the point it was extracted
+# from. Keeps the delivered page semantically identical to the pre-split version.
+HTML_PAGE = HTML_PAGE.replace(
+    "/*__UPLOAD_QUEUE_JS__*/",
+    (_STATIC_DIR / "_upload_queue.js").read_text(),
+    1,
+)
 
 _FAVICON_SVG = (
     '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">'
