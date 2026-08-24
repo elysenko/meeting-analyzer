@@ -1,0 +1,13 @@
+{
+  "build": {
+    "dockerfile": "Dockerfile",
+    "method": "dockerfile",
+    "port": 8000
+  },
+  "env": {
+    "required": []
+  },
+  "name": "meeting-analyzer",
+  "run": {},
+  "schemaVersion": 1
+}
