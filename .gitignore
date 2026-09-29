@@ -30,3 +30,8 @@ team-chat.js
 
 # Build artifacts
 web/
+
+# Colossus backfill: vendored/build dirs
+node_modules/
+dist/
+.angular/
