@@ -3185,6 +3185,8 @@ async def require_user(request: Request) -> dict:
 
 # ---- OAuth2/OIDC Authentication endpoints ----
 
+SIGN_IN_RETRY_AFTER_SECONDS = 60
+
 
 @app.get("/auth/login")
 async def auth_login(request: Request, kc_idp_hint: str | None = None):
@@ -3193,7 +3195,20 @@ async def auth_login(request: Request, kc_idp_hint: str | None = None):
     extra_params = {}
     if kc_idp_hint:
         extra_params["kc_idp_hint"] = kc_idp_hint
-    return await oauth.keycloak.authorize_redirect(request, redirect_uri, **extra_params)
+    try:
+        return await oauth.keycloak.authorize_redirect(request, redirect_uri, **extra_params)
+    except httpx.HTTPError as exc:
+        # authlib fetches OIDC discovery before it can build the redirect; when the
+        # identity server is unreachable, answer an explicit 503 instead of an
+        # unhandled 500 so the cause is visible to users and health checks.
+        logger.error("Keycloak unreachable at %s: %s", KEYCLOAK_URL, exc)
+        return HTMLResponse(
+            "<!doctype html><title>Sign-in unavailable</title>"
+            "<h1>Sign-in is temporarily unavailable</h1>"
+            "<p>The sign-in service could not be reached. Please try again in a minute.</p>",
+            status_code=503,
+            headers={"Retry-After": str(SIGN_IN_RETRY_AFTER_SECONDS)},
+        )
 
 
 @app.get("/auth/callback")
