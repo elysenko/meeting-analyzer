@@ -8,6 +8,9 @@
     "required": []
   },
   "name": "meeting-analyzer",
+  "resources": {
+    "memory": "1536Mi"
+  },
   "run": {},
   "schemaVersion": 1
 }
